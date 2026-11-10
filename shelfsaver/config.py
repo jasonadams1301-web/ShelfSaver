@@ -17,6 +17,9 @@ class Config:
     ffprobe: str = "ffprobe"
     # Which hardware encoder to use: a key of encoders.ENCODERS.
     encoder: str = DEFAULT_NAME
+    # QSV only. Linux: the render node (default /dev/dri/renderD128). Windows: the DirectX adapter
+    # number when the PC has more than one GPU (default: Windows picks).
+    qsv_device: str = ""
     # Folders the web UI may browse and libraries may live in. Empty means "no restriction"
     # on Windows (drive letters, as before) and "nothing allowed yet" on Linux; see
     # web/folders.py for why Linux must be told explicitly.
@@ -71,8 +74,13 @@ def load_config() -> Config:
         for key in ("media_roots", "scratch_roots"):
             if isinstance(data.get(key), list):
                 setattr(cfg, key, _clean_roots(data[key]))
-        if data.get("encoder") in ENCODERS:
-            cfg.encoder = data["encoder"]
+        # Cleaned exactly like the environment variable below, so the two always agree.
+        file_encoder = data.get("encoder")
+        if isinstance(file_encoder, str) and file_encoder.strip().lower() in ENCODERS:
+            cfg.encoder = file_encoder.strip().lower()
+        device = data.get("qsv_device")
+        if isinstance(device, (str, int)) and not isinstance(device, bool):
+            cfg.qsv_device = str(device).strip()
         if _valid_port(data.get("port")):
             cfg.port = _valid_port(data["port"])
     # The environment wins over the file: in a container it is the normal way to configure,
@@ -85,6 +93,8 @@ def load_config() -> Config:
     # An unknown name is ignored, not fatal: the file's value (or the default) stays in force.
     if os.environ.get("SHELFSAVER_ENCODER", "").strip().lower() in ENCODERS:
         cfg.encoder = os.environ["SHELFSAVER_ENCODER"].strip().lower()
+    if os.environ.get("SHELFSAVER_QSV_DEVICE", "").strip():
+        cfg.qsv_device = os.environ["SHELFSAVER_QSV_DEVICE"].strip()
     if _valid_port(os.environ.get("SHELFSAVER_PORT")):
         cfg.port = _valid_port(os.environ["SHELFSAVER_PORT"])
     return cfg

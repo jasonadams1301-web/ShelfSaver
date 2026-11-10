@@ -85,10 +85,10 @@ libraries, holding folders and scratch disks are never touched.
 ## Running on Linux (preview)
 
 ShelfSaver now starts and runs on Linux. This is a first step: there is no installer, service
-file or container image yet, and the encoder is still NVIDIA's (NVENC), so converting needs an
-NVIDIA card whose driver and FFmpeg are set up for it. Intel Quick Sync and a Docker image are
-planned next. Everything below has been run on Debian with the test suite and an end-to-end
-check of the real app; NVENC on Linux has not been tried.
+file or container image yet. Converting needs either an NVIDIA card (NVENC, the default) or an
+Intel GPU (Quick Sync, see below) with a matching FFmpeg. A Docker image is planned next.
+Everything below has been run on Debian with the test suite and an end-to-end check of the real
+app. NVENC on Linux has not been tried; Quick Sync on Linux has (Intel UHD 770).
 
 Install FFmpeg and Python 3.10 or newer, then from this folder:
 
@@ -103,9 +103,31 @@ SHELFSAVER_DATA=/var/lib/shelfsaver SHELFSAVER_MEDIA_ROOTS=/media SHELFSAVER_SCR
 | `SHELFSAVER_SCRATCH_ROOTS` | Folders the scratch disk may be in. Required before a scratch disk can be chosen. |
 | `SHELFSAVER_DATA` | Where settings, history and the login are kept. Default `~/.local/share/ShelfSaver`. |
 | `SHELFSAVER_PORT` | Web page port. Default 8642. |
+| `SHELFSAVER_ENCODER` | `nvenc` (default) or `qsv`. Works on Windows and Linux. |
+| `SHELFSAVER_QSV_DEVICE` | Quick Sync only. Linux: the render node, default `/dev/dri/renderD128`. Windows: the DirectX adapter number, only needed if the PC has more than one GPU. |
 
-The same names can go in `config.json` in the data folder as `media_roots`, `scratch_roots`
-and `port`; the environment wins if both are set.
+The same names can go in `config.json` in the data folder as `media_roots`, `scratch_roots`,
+`port`, `encoder` and `qsv_device`; the environment wins if both are set.
+
+### Intel Quick Sync (QSV)
+
+Set `SHELFSAVER_ENCODER=qsv`. Needs an Intel GPU and an FFmpeg built with `hevc_qsv`.
+
+- **Linux:** FFmpeg needs Intel's media driver and the oneVPL runtime (on Debian:
+  `intel-media-va-driver-non-free libvpl2 libmfx-gen1.2`; the driver is in the non-free
+  component). ShelfSaver must be able to open the render node, so in Docker pass the device in
+  (`--device /dev/dri/renderD128`).
+- **Windows:** uses D3D11, selected automatically. **This path has not been run on an Intel GPU**;
+  the option used is the one FFmpeg documents.
+- **Checked on Linux (Intel UHD 770):** ShelfSaver itself scanned, converted, verified and replaced
+  an 8-bit MKV. The 10-bit, MP4 (`hvc1` tag, HDR colour tags) and deinterlace cases were run as the
+  same ffmpeg commands directly, not yet through ShelfSaver's own conversion.
+- **Quality numbers are provisional.** Low/Medium/High map to Quick Sync quality 21/25/29 (21 is what
+  one of our own Tdarr setups already uses). Quick Sync's scale is not NVENC's, so the amount saved
+  at each level may differ; use `scripts/make_compare_clips.py --encoder qsv` on your own files
+  before relying on it.
+- **The GPU tile on the home page shows a dash** for Quick Sync: Intel offers no simple reading that
+  doesn't need extra permissions, and a made-up number would mislead.
 
 Things that differ from Windows, and why:
 
