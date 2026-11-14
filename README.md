@@ -49,6 +49,9 @@ These show a fresh install with nothing converted yet, and the folder names are 
 - Can keep replaced originals in a holding folder until you clear them.
 - Can remove soundtracks that aren't in your default language (English unless you change it),
   except on dubbed movies. This is off unless you turn it on.
+- Can remove commentary soundtracks: tracks the file marks, or titles, as commentary, such as a
+  director's commentary. The main soundtrack is never removed, so a file whose audio is all
+  commentary is left as it is. This is off unless you turn it on for a library.
 - Can shrink H.265 files that are far bigger than they need to be. It tests a short sample first
   and only converts when the file would come out at least 25% smaller. HDR files are left as
   they are. This is off unless you turn it on for a library.

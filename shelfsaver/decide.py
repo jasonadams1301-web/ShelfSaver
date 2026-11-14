@@ -11,7 +11,7 @@ from .quality import HDR_TRANSFERS, LEVELS, resolution_bucket
 _DUB = re.compile(r"\bdub(bed)?\b", re.IGNORECASE)
 
 _EFFICIENT_WHY = "Already stored in a modern, efficient format"
-STRIP_WHY = "Only the extra-language audio tracks can be removed"
+STRIP_WHY = "Only the extra audio tracks can be removed"
 SAMPLE_SHORT = "Sample showed too little saving"
 SAMPLE_FAILED = "Sample test failed"
 # Skip reasons that mean an H.265 file was already tried, so it isn't sampled again.
@@ -39,6 +39,24 @@ def audio_to_remove(streams, language: str = DEFAULT_LANGUAGE) -> tuple:
     return tuple(s.index for s in audio if not is_language(s.language, language))
 
 
+def commentary_to_remove(streams, already_removed=()) -> tuple:
+    """Stream indexes of commentary audio that are safe to drop; () when unsure.
+
+    Safe means a real soundtrack is left: a file whose audio is all commentary, or whose default
+    track is commentary, is not what this rule expects, so it is left as it is. `already_removed`
+    is what the language rule is dropping, so the two rules together can never empty the audio.
+    """
+    audio = [s for s in streams if s.kind == "audio"]
+    if len(audio) < 2:
+        return ()
+    if any(s.is_default and s.is_commentary for s in audio):
+        return ()
+    gone = set(already_removed)
+    if not any(not s.is_commentary and s.index not in gone for s in audio):
+        return ()
+    return tuple(s.index for s in audio if s.is_commentary and s.index not in gone)
+
+
 def _skip(reason: str, why: str) -> Decision:
     return Decision("skip", reason, (), why)
 
@@ -46,7 +64,7 @@ def _skip(reason: str, why: str) -> Decision:
 def decide(info: MediaInfo, level: str, english_only: bool,
            nlink: int = 1, read_only: bool = False,
            language: str = DEFAULT_LANGUAGE, shrink_h265: bool = False,
-           tried: Optional[str] = None) -> Decision:
+           tried: Optional[str] = None, remove_commentary: bool = False) -> Decision:
     """`tried` is the reason an earlier try at shrinking this H.265 file ended, if one did."""
     if nlink > 1:
         return _skip("Linked to another copy",
@@ -60,6 +78,10 @@ def decide(info: MediaInfo, level: str, english_only: bool,
                      "Converting would lose the Dolby Vision picture")
 
     removal = audio_to_remove(info.streams, language) if english_only else ()
+    if remove_commentary:
+        extra = commentary_to_remove(info.streams, removal)
+        if extra:
+            removal = tuple(sorted({*removal, *extra}))
 
     skip = None
     sample_first = False

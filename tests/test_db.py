@@ -398,3 +398,24 @@ def test_a_share_that_refuses_chmod_does_not_stop_startup(tmp_path, monkeypatch)
 
     monkeypatch.setattr(os, "chmod", refuse)
     Database(tmp_path / "data" / "shelfsaver.db").set_setting("a", "b")
+
+
+def test_an_older_database_gains_the_remove_commentary_column_switched_off(tmp_path):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA.replace("    remove_commentary INTEGER NOT NULL DEFAULT 0,\n", ""))
+    conn.execute("INSERT INTO libraries(name, path, level, english_only) VALUES ('TV', 'tv', 'low', 1)")
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    kept = db.list_libraries()[0]
+    assert kept.remove_commentary is False and kept.english_only is True  # nothing else changed
+    db.update_library(kept.id, remove_commentary=True)
+    assert db.list_libraries()[0].remove_commentary is True
+    db.close()
+    assert Database(path).list_libraries()[0].remove_commentary is True
+
+
+def test_remove_commentary_is_saved_with_a_new_library_and_starts_off(db):
+    assert db.add_library("TV", r"D:\TV", "medium", False, remove_commentary=True).remove_commentary is True
+    assert db.add_library("Kids", r"D:\Kids", "medium", False).remove_commentary is False

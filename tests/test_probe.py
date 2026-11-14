@@ -178,3 +178,60 @@ def test_scan_streams_ties_ffprobe_to_the_app(tmp_path, monkeypatch):
     path = make_video(tmp_path / "a.mkv", seconds=1, size="320x180")
     assert probe_module.scan_streams(path, "ffprobe")
     assert len(tied) == 1
+
+
+# ---- commentary soundtracks
+
+def _audio(index, title=None, comment=0, kind="audio"):
+    raw = {"index": index, "codec_type": kind, "codec_name": "aac",
+           "tags": {"language": "eng"}, "disposition": {"default": 0, "comment": comment}}
+    if title is not None:
+        raw["tags"]["title"] = title
+    return raw
+
+
+def _commentary_flags(*audio_streams):
+    video = {"index": 0, "codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080}
+    data = {"format": {"duration": "10.0"}, "streams": [video, *audio_streams]}
+    return [s.is_commentary for s in parse_probe(data, "x.mkv", 1000).streams if s.kind == "audio"]
+
+
+def test_the_comment_flag_marks_an_audio_track_as_commentary():
+    assert _commentary_flags(_audio(1), _audio(2, comment=1)) == [False, True]
+
+
+@pytest.mark.parametrize("title", [
+    "Commentary", "Director's Commentary", "Audio commentary with the cast", "COMMENTARY TRACK",
+    "English (Commentary)"])
+def test_a_commentary_title_marks_an_audio_track_as_commentary(title):
+    assert _commentary_flags(_audio(1, "English"), _audio(2, title)) == [False, True]
+
+
+@pytest.mark.parametrize("title", [
+    None, "", "English", "Main", "Surround 5.1", "Commentator voice-over", "Comments"])
+def test_ordinary_audio_titles_are_not_commentary(title):
+    assert _commentary_flags(_audio(1, title), _audio(2, "Spanish")) == [False, False]
+
+
+def test_only_audio_is_ever_marked_commentary():
+    video = {"index": 0, "codec_type": "video", "codec_name": "h264", "width": 1920,
+             "height": 1080, "tags": {"title": "Commentary"}, "disposition": {"comment": 1}}
+    sub = _audio(2, "Commentary", comment=1, kind="subtitle")
+    data = {"format": {"duration": "10.0"}, "streams": [video, _audio(1), sub]}
+    assert not any(s.is_commentary for s in parse_probe(data, "x.mkv", 1000).streams)
+
+
+def test_probe_reads_the_title_of_a_commentary_track_from_a_real_file(tmp_path):
+    p = make_video(tmp_path / "t.mkv", audio=[("eng", "English"), ("eng", "Director's Commentary")])
+    audio = [s for s in probe(p, "ffprobe").streams if s.kind == "audio"]
+    assert [s.is_commentary for s in audio] == [False, True]
+
+
+def test_probe_reads_the_comment_disposition_from_a_real_file(tmp_path):
+    src = make_video(tmp_path / "src.mkv", audio=[("eng", "English"), ("eng", "Extra")])
+    out = tmp_path / "flagged.mkv"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-map", "0", "-c", "copy",
+                    "-disposition:a:1", "comment", str(out)], check=True)
+    audio = [s for s in probe(out, "ffprobe").streams if s.kind == "audio"]
+    assert [s.title for s in audio] == ["English", "Extra"]  # the title alone would not match
+    assert [s.is_commentary for s in audio] == [False, True]

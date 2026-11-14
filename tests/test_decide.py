@@ -1,6 +1,6 @@
 import pytest
 
-from shelfsaver.decide import audio_to_remove, decide
+from shelfsaver.decide import audio_to_remove, commentary_to_remove, decide
 from shelfsaver.models import Stream
 from shelfsaver.quality import LEVELS, MIN_SAVINGS, resolution_bucket
 from tests.helpers import audio, eng_spa, info
@@ -261,3 +261,92 @@ def test_dolby_vision_h265_is_never_sampled():
 
 def test_h264_is_never_sampled_first():
     assert decide(info(), "medium", False, shrink_h265=True).sample_first is False
+
+
+# ---- commentary soundtracks
+
+def commentary_streams(*tracks) -> tuple:
+    """Video, then audio tracks of (language, is_default, is_commentary)."""
+    streams = [Stream(0, "video", "h264", None, None, True, False)]
+    for i, (lang, default, commentary) in enumerate(tracks, start=1):
+        streams.append(Stream(i, "audio", "aac", lang, None, default, False, commentary))
+    return tuple(streams)
+
+
+def test_commentary_track_is_removed_when_a_main_track_stays():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True))
+    assert commentary_to_remove(streams) == (2,)
+
+
+def test_every_commentary_track_is_removed():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True), ("eng", False, True))
+    assert commentary_to_remove(streams) == (2, 3)
+
+
+def test_a_file_without_commentary_loses_nothing():
+    assert commentary_to_remove(commentary_streams(("eng", True, False), ("spa", False, False))) == ()
+
+
+def test_a_single_audio_track_is_never_removed_even_if_marked_commentary():
+    assert commentary_to_remove(commentary_streams(("eng", True, True))) == ()
+
+
+def test_a_file_whose_audio_is_all_commentary_is_left_alone():
+    streams = commentary_streams(("eng", True, True), ("eng", False, True))
+    assert commentary_to_remove(streams) == ()
+
+
+def test_a_commentary_default_track_means_unsure_so_nothing_is_removed():
+    streams = commentary_streams(("eng", True, True), ("eng", False, False))
+    assert commentary_to_remove(streams) == ()
+
+
+def test_commentary_is_not_removed_when_the_language_rule_already_took_the_main_track():
+    # The language rule would drop the Spanish main track, leaving only the commentary: keep it.
+    streams = commentary_streams(("eng", True, False), ("eng", False, True), ("spa", False, False))
+    assert commentary_to_remove(streams, already_removed=(1, 3)) == ()
+
+
+def test_commentary_removal_is_off_unless_asked_for():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True))
+    d = decide(info(width=1920, video_bitrate=30_000_000, streams=streams), "medium", False)
+    assert d.action == "convert" and d.remove_audio == ()
+
+
+def test_commentary_is_removed_from_a_file_that_is_converted():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True))
+    d = decide(info(width=1920, video_bitrate=30_000_000, streams=streams), "medium", False,
+               remove_commentary=True)
+    assert d.action == "convert" and d.remove_audio == (2,)
+
+
+def test_commentary_alone_makes_an_h265_file_worth_rewriting():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True))
+    d = decide(info(video_codec="hevc", streams=streams), "medium", False, remove_commentary=True)
+    assert d.action == "strip_only" and d.remove_audio == (2,)
+
+
+def test_commentary_removal_adds_to_the_language_removal():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True), ("spa", False, False))
+    d = decide(info(video_codec="hevc", streams=streams), "medium", True, remove_commentary=True)
+    assert d.action == "strip_only" and d.remove_audio == (2, 3)
+
+
+def test_both_rules_never_remove_every_audio_track():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True), ("spa", False, False))
+    for first in (True, False):
+        d = decide(info(video_codec="hevc", streams=streams), "medium", first, remove_commentary=True)
+        kept = {s.index for s in streams if s.kind == "audio"} - set(d.remove_audio)
+        assert kept, d
+
+
+def test_commentary_removal_does_not_override_a_dolby_vision_skip():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True))
+    d = decide(info(dolby_vision=True, streams=streams), "high", False, remove_commentary=True)
+    assert d.action == "skip" and d.reason == "Dolby Vision, left as is"
+
+
+def test_the_reason_for_removing_only_tracks_does_not_claim_they_are_other_languages():
+    streams = commentary_streams(("eng", True, False), ("eng", False, True))
+    d = decide(info(video_codec="hevc", streams=streams), "medium", False, remove_commentary=True)
+    assert d.why == "Only the extra audio tracks can be removed"

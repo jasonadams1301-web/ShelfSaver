@@ -714,3 +714,35 @@ def test_h265_the_app_made_is_never_queued_again(env):
     env.scanner.reevaluate(env.lib.id)
     env.scanner.scan_library(env.lib.id)
     assert env.db.get_file(row.id).status == "converted"
+
+
+# ---- commentary soundtracks
+
+COMMENTARY_AUDIO = (("eng", "English"), ("eng", "Director's Commentary"))
+
+
+def test_commentary_is_left_alone_until_the_library_asks_for_it_to_go(env):
+    path = env.root / "film.mkv"
+    make_video(path, seconds=2, size=SIZE, vcodec="libx265", crf=28, audio=COMMENTARY_AUDIO)
+    env.scanner.scan_library(env.lib.id)
+    assert env.status(path) == "skipped"  # already H.265, and nothing is set to be removed
+
+
+def test_a_commentary_track_makes_an_h265_file_worth_rewriting(env):
+    path = env.root / "film.mkv"
+    make_video(path, seconds=2, size=SIZE, vcodec="libx265", crf=28, audio=COMMENTARY_AUDIO)
+    env.db.update_library(env.lib.id, remove_commentary=True)
+    env.scanner.scan_library(env.lib.id)
+    assert env.status(path) == "queued"
+
+
+def test_switching_commentary_removal_on_rechecks_converted_files(env):
+    path = env.root / "film.mkv"
+    make_video(path, seconds=2, size=SIZE, vcodec="libx265", crf=28, audio=COMMENTARY_AUDIO)
+    st = os.stat(path)
+    row = env.db.upsert_file(env.lib.id, str(path), st.st_size, st.st_mtime, "converted")
+    env.scanner.reevaluate(env.lib.id)
+    assert env.db.get_file(row.id).status == "converted"  # both removal options are off
+    env.db.update_library(env.lib.id, remove_commentary=True)
+    env.scanner.reevaluate(env.lib.id)
+    assert env.db.get_file(row.id).status == "queued"

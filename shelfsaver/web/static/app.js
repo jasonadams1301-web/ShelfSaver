@@ -339,6 +339,19 @@
     };
   }
 
+  function commentaryCheckbox(checked) {
+    var box = el('input', { type: 'checkbox', id: 'remove-commentary', checked: checked });
+    return {
+      input: box,
+      row: el('div', { class: 'field-row' },
+        el('label', { class: 'check', for: 'remove-commentary' }, box,
+          el('span', { text: 'Remove commentary soundtracks' })),
+        el('p', { class: 'muted small', text: "Removes soundtracks that are marked or titled as " +
+          "commentary, such as a director's commentary. The main soundtrack is never removed. " +
+          "Removed soundtracks can't be recovered once the original is replaced." }))
+    };
+  }
+
   function shrinkCheckbox(checked) {
     var box = el('input', { type: 'checkbox', id: 'shrink-h265', checked: checked });
     return {
@@ -357,6 +370,7 @@
       var folder = el('input', { type: 'text', id: 'lib-path', autocomplete: 'off', class: 'mono' });
       var levels = levelPicker('level', 'medium');
       var english = englishCheckbox(false);
+      var commentary = commentaryCheckbox(false);
       var shrink = shrinkCheckbox(false);
       var error = el('p', { class: 'err', role: 'alert', hidden: true });
       var submit = el('button', { type: 'submit', class: 'primary', text: 'Add library' });
@@ -374,7 +388,7 @@
               });
             }
           }))),
-        levels, english.row, shrink.row, error,
+        levels, english.row, commentary.row, shrink.row, error,
         dialogButtons(
           el('button', { type: 'button', text: 'Cancel', onclick: function () { dialog.close('cancel'); } }),
           submit));
@@ -383,7 +397,8 @@
         submit.disabled = true;
         api('POST', '/api/libraries', {
           name: name.value, path: folder.value, level: levels.value(),
-          english_only: english.input.checked, shrink_h265: shrink.input.checked
+          english_only: english.input.checked, shrink_h265: shrink.input.checked,
+          remove_commentary: commentary.input.checked
         }).then(function () {
           dialog.close('added');
           done();
@@ -937,11 +952,12 @@
       openDialog(function (dialog) {
         var levels = levelPicker('level', lib.level);
         var english = englishCheckbox(lib.english_only);
+        var commentary = commentaryCheckbox(lib.remove_commentary);
         var shrink = shrinkCheckbox(lib.shrink_h265);
         var error = el('p', { class: 'err', role: 'alert', hidden: true });
         var save = el('button', { type: 'submit', class: 'primary', text: 'Save' });
         var form = el('form', { novalidate: true },
-          el('h3', { text: 'Library options' }), levels, english.row, shrink.row,
+          el('h3', { text: 'Library options' }), levels, english.row, commentary.row, shrink.row,
           el('p', { class: 'muted small', text: 'Changes apply to files that are not converted yet.' }),
           error,
           dialogButtons(
@@ -965,7 +981,7 @@
           save.disabled = true;
           api('PATCH', '/api/libraries/' + lib.id, {
             level: levels.value(), english_only: english.input.checked,
-            shrink_h265: shrink.input.checked
+            shrink_h265: shrink.input.checked, remove_commentary: commentary.input.checked
           })
             .then(function () { dialog.close('saved'); refresh(); }, function (problem) {
               error.hidden = false;

@@ -1661,3 +1661,47 @@ def test_library_dialogs_offer_shrinking_h265_switched_off_for_new_libraries():
     assert "shrinkCheckbox(false)" in app_js and "shrinkCheckbox(lib.shrink_h265)" in app_js
     assert "Shrink oversized H.265 files" in app_js
     assert "shrink_h265: shrink.input.checked" in app_js
+
+
+# ---- Commentary removal starts off
+
+def test_remove_commentary_is_off_unless_asked_for(authed, tmp_path):
+    body = add_library(authed, make_folder(tmp_path, "movies")).json()
+    assert body["remove_commentary"] is False
+    body = add_library(authed, make_folder(tmp_path, "tv"), name="TV", remove_commentary=True).json()
+    assert body["remove_commentary"] is True
+
+
+def test_changing_commentary_removal_rechecks_the_library(authed, parts, tmp_path):
+    _, _, scanner, _ = parts
+    lib = add_library(authed, make_folder(tmp_path, "movies")).json()
+    scanner.wait()
+    time.sleep(0.1)
+    scanner.calls.clear()
+    r = authed.patch(f"/api/libraries/{lib['id']}", json={"remove_commentary": True})
+    assert r.status_code == 200 and r.json()["remove_commentary"] is True
+    scanner.wait()
+    assert ("reevaluate", lib["id"]) in scanner.calls
+    assert authed.get("/api/libraries").json()[0]["remove_commentary"] is True
+
+
+def test_commentary_removal_only_accepts_a_real_yes_or_no(authed, tmp_path):
+    lib = add_library(authed, make_folder(tmp_path, "movies")).json()
+    assert authed.patch(f"/api/libraries/{lib['id']}", json={"remove_commentary": "yes"}).status_code == 400
+
+
+def test_add_library_dialog_starts_with_commentary_removal_off():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "commentaryCheckbox(false)" in app_js and "commentaryCheckbox(true)" not in app_js
+
+
+def test_the_commentary_option_says_what_it_does_and_that_it_cannot_be_undone():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "Remove commentary soundtracks" in app_js
+    assert "The main soundtrack is never removed" in app_js
+    assert "can't be recovered once the original is replaced" in app_js
+
+
+def test_both_library_dialogs_send_the_commentary_setting():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert app_js.count("remove_commentary: commentary.input.checked") == 2

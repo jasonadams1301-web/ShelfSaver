@@ -196,10 +196,11 @@ class Scanner:
                                          & READ_ONLY_ATTRIBUTE),
                           language=load_language(self.db.get_setting("default_language")),
                           shrink_h265=library.shrink_h265,
+                          remove_commentary=library.remove_commentary,
                           tried=row.reason if row and row.reason in TRIED_REASONS else None)
         details = file_details(info)
         if row is not None and row.status == "converted":
-            # Never converted twice; only the extra-language audio can still be removed. A changed
+            # Never converted twice; only extra audio can still be removed. A changed
             # file in an older format is a new copy, unless it is an original that was put back.
             new_copy = (decision.action == "convert" and not unchanged
                         and not self.db.was_converted_from(row.id, st.st_size))
@@ -391,7 +392,8 @@ class Scanner:
                 continue
             if self._stopping():
                 return
-            if row.status == "converted" and not library.english_only:
+            if (row.status == "converted" and not library.english_only
+                    and not library.remove_commentary):
                 continue  # nothing can change for a converted file without track removal
             if not self._process(library, row.path, self.db.get_file(row.id), force=True):
                 self._add_pending(row.path)

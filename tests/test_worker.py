@@ -2000,7 +2000,7 @@ def test_a_short_sample_still_removes_extra_audio(env):
     env.worker.process_one()
     run = env.run_row()
     assert env.status() == "converted"
-    assert run["why"] == "Only the extra-language audio tracks can be removed"
+    assert run["why"] == "Only the extra audio tracks can be removed"
     assert [t["language"] for t in json.loads(run["tracks_json"])["removed"]] == ["spa"]
     assert env.db.get_file(f.id).reason is None
 
@@ -2039,7 +2039,7 @@ def test_a_full_conversion_that_misses_a_quarter_falls_back_to_removing_audio(en
     env.queue_video(vcodec="libx265", crf=0, audio=(("eng", "English"), ("spa", "Spanish")))
     env.worker.process_one()
     assert env.status() == "converted" and outputs == []
-    assert env.run_row()["why"] == "Only the extra-language audio tracks can be removed"
+    assert env.run_row()["why"] == "Only the extra audio tracks can be removed"
 
 
 def test_a_sample_that_would_grow_says_so_plainly(env):
@@ -2087,3 +2087,31 @@ def test_a_linked_work_folder_fails_the_run_without_building_through_the_link(en
     assert env.status(f.id) != "converted"
     assert list(elsewhere.iterdir()) == []
     assert env.lib_file.read_bytes() == env.original_bytes   # the original is untouched
+
+
+def test_the_worker_removes_a_commentary_track_when_the_library_asks(env):
+    env.db.update_library(env.library.id, remove_commentary=True)
+    env.encode_output = dict(vcodec="libx265", crf=40, seconds=2, size=SIZE,
+                             audio=(("eng", "English"),))
+    f = env.queue(make_video(env.lib / "two.mkv", seconds=2, size=SIZE, vcodec="libx265", crf=20,
+                             audio=(("eng", "English"), ("eng", "Director's Commentary"))))
+    env.worker.process_one()
+    assert env.db.get_file(f.id).status == "converted"
+    tracks = json.loads(env.run_row()["tracks_json"])
+    assert [t["title"] for t in tracks["removed"]] == ["Director's Commentary"]
+    assert "English" in [t["title"] for t in tracks["kept"]]
+
+
+@pytest.mark.gpu
+def test_end_to_end_strip_only_removes_a_commentary_track(env, monkeypatch):
+    real_encoder(monkeypatch)
+    env.db.update_library(env.library.id, remove_commentary=True)
+    f = env.queue(make_video(env.lib / "two.mkv", seconds=2, size="320x240", vcodec="libx265",
+                             crf=40, audio=(("eng", "English"), ("eng", "Director's Commentary"))))
+    env.worker.process_one()
+    row = env.db.get_file(f.id)
+    assert row.status == "converted"
+    info = probe(row.path, "ffprobe")
+    assert [s.title for s in info.streams if s.kind == "audio"] == ["English"]
+    tracks = json.loads(env.run_row()["tracks_json"])
+    assert [t["title"] for t in tracks["removed"]] == ["Director's Commentary"]

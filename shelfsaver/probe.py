@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 import time
@@ -49,6 +50,22 @@ def _usable_rate(value) -> bool:
         return float(num) > 0 and float(den or 1) > 0
     except ValueError:
         return False
+
+
+_COMMENTARY_TITLE = re.compile(r"(?<![a-z])commentary(?![a-z])", re.IGNORECASE)
+
+
+def _is_commentary(raw: dict, kind: str) -> bool:
+    """An audio track the file flags as commentary, or one whose title says so.
+
+    Both are checked because releases are inconsistent: some set only the flag, some only a title
+    such as "Director's Commentary". Only audio counts; a subtitle titled that is a subtitle.
+    """
+    if kind != "audio":
+        return False
+    if (raw.get("disposition") or {}).get("comment"):
+        return True
+    return bool(_COMMENTARY_TITLE.search(str(_tags(raw).get("title") or "")))
 
 
 def _is_cover_art(raw: dict, kind: str) -> bool:
@@ -113,6 +130,7 @@ def parse_probe(data: dict, path, size: int) -> MediaInfo:
             title=tags.get("title"),
             is_default=bool((raw.get("disposition") or {}).get("default")),
             is_cover_art=cover,
+            is_commentary=_is_commentary(raw, kind),
         ))
         if kind == "video" and not cover and main is None:
             main = raw

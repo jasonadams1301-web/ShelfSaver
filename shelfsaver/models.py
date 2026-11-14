@@ -23,6 +23,7 @@ class Library:
     english_only: bool
     status: str = "ok"
     shrink_h265: bool = False
+    remove_commentary: bool = False
 
 
 @dataclass
@@ -74,6 +75,7 @@ class Stream:
     title: Optional[str] = None
     is_default: bool = False
     is_cover_art: bool = False
+    is_commentary: bool = False  # an audio track the file marks, or titles, as commentary
 
 
 @dataclass(frozen=True)

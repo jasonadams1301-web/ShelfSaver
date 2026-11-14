@@ -133,6 +133,7 @@ class LibraryBody(BaseModel):
     level: str = ""
     english_only: StrictBool = False
     shrink_h265: StrictBool = False
+    remove_commentary: StrictBool = False
 
 
 class LibraryPatch(BaseModel):
@@ -140,6 +141,7 @@ class LibraryPatch(BaseModel):
     level: Optional[str] = None
     english_only: Optional[StrictBool] = None
     shrink_h265: Optional[StrictBool] = None
+    remove_commentary: Optional[StrictBool] = None
 
 
 class SettingsPatch(BaseModel):
@@ -406,7 +408,8 @@ def create_app(db, worker, scanner, config) -> FastAPI:
     def library_json(library) -> dict:
         return {"id": library.id, "name": library.name, "path": library.path,
                 "level": library.level, "english_only": library.english_only,
-                "shrink_h265": library.shrink_h265, "status": library.status, "stats": db.stats(library.id)}
+                "shrink_h265": library.shrink_h265, "remove_commentary": library.remove_commentary,
+                "status": library.status, "stats": db.stats(library.id)}
 
     def busy_library_ids() -> set:
         busy = set()
@@ -738,7 +741,8 @@ def create_app(db, worker, scanner, config) -> FastAPI:
         scratch = scratch_setting()
         if scratch and _overlaps(path, scratch):
             raise _fail(400, "That folder is the scratch disk folder or overlaps it.")
-        library = db.add_library(name, path, level, body.english_only, body.shrink_h265)
+        library = db.add_library(name, path, level, body.english_only, body.shrink_h265,
+                                 body.remove_commentary)
         remember_volume(path)
         _in_background("scan", scanner.refresh_watches, lambda: scanner.scan_library(library.id))
         return library_json(library)
@@ -755,13 +759,17 @@ def create_app(db, worker, scanner, config) -> FastAPI:
             fields["english_only"] = body.english_only
         if body.shrink_h265 is not None:
             fields["shrink_h265"] = body.shrink_h265
+        if body.remove_commentary is not None:
+            fields["remove_commentary"] = body.remove_commentary
         db.update_library(library_id, **fields)
         level_changed = fields.get("level", library.level) != library.level
         if level_changed:
             db.forget_saving_results(library_id)  # a new level gives a different saving
         if (level_changed
                 or fields.get("english_only", library.english_only) != library.english_only
-                or fields.get("shrink_h265", library.shrink_h265) != library.shrink_h265):
+                or fields.get("shrink_h265", library.shrink_h265) != library.shrink_h265
+                or fields.get("remove_commentary", library.remove_commentary)
+                != library.remove_commentary):
             _in_background("reevaluate", lambda: scanner.reevaluate(library_id))
         return library_json(library_or_404(library_id))
 

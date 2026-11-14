@@ -569,6 +569,7 @@ class Worker:
                           read_only=not info_stat.st_mode & stat.S_IWRITE,
                           language=load_language(self.db.get_setting("default_language")),
                           shrink_h265=library.shrink_h265,
+                          remove_commentary=library.remove_commentary,
                           tried=file.reason if file.reason in TRIED_REASONS else None)
         details = file_details(info)
         if decision.action == "skip":
@@ -776,7 +777,7 @@ class Worker:
         return False
 
     def _strip_instead(self, job: _Job) -> bool:
-        """Fall back to only removing extra-language audio, when there is any to remove."""
+        """Fall back to only removing extra audio, when there is any to remove."""
         if not job.decision.remove_audio:
             return False
         logger.info("Only removing the extra audio from %s", job.file.path)
