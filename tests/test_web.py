@@ -1832,3 +1832,85 @@ def test_the_commentary_option_says_what_it_does_and_that_it_cannot_be_undone():
 def test_both_library_dialogs_send_the_commentary_setting():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert app_js.count("remove_commentary: commentary.input.checked") == 2
+
+
+# ---- updates
+
+class StubUpdater:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def status(self, consume=False):
+        self.calls.append(("status", consume))
+        return {"state": "pending", "version": "0.7.2", "message": None, "check": None,
+                "last_result": None, "kind": "windows"}
+
+    def check(self):
+        self.calls.append("check")
+        return {"status": "newer", "version": "0.7.2"}
+
+    def start(self):
+        self.calls.append("start")
+        return {"state": "pending"}
+
+    def cancel(self):
+        self.calls.append("cancel")
+        return {"state": "idle"}
+
+    def cancel_for_resume(self):
+        self.calls.append("cancel_for_resume")
+
+
+@pytest.fixture
+def updated(parts):
+    db, worker, scanner, config = parts
+    calls = []
+    worker.calls = calls  # one list, so the order of updater and worker calls shows
+    with TestClient(create_app(db, worker, scanner, config, updater=StubUpdater(calls))) as c:
+        assert c.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+        yield c, calls
+
+
+def test_update_routes_need_login(parts):
+    db, worker, scanner, config = parts
+    with TestClient(create_app(db, worker, scanner, config, updater=StubUpdater([]))) as c:
+        assert c.get("/api/update").status_code == 401
+        for url in ["/api/update/check", "/api/update/start", "/api/update/cancel"]:
+            assert c.post(url).status_code == 401, url
+
+
+def test_update_routes_call_the_updater(updated):
+    c, calls = updated
+    assert c.post("/api/update/check").json() == {"status": "newer", "version": "0.7.2"}
+    assert c.post("/api/update/cancel").json() == {"state": "idle"}
+    assert c.get("/api/update").json()["state"] == "pending"
+    assert calls == ["check", "cancel", ("status", True)]
+
+
+def test_update_start_ignores_a_version_in_the_body(updated):
+    c, calls = updated
+    assert c.post("/api/update/start", json={"version": "9.9.9"}).json() == {"state": "pending"}
+    assert calls == ["start"]
+
+
+def test_status_includes_the_update_state(updated):
+    c, calls = updated
+    body = c.get("/api/status").json()
+    assert body["update"]["state"] == "pending" and ("status", False) in calls
+
+
+def test_resume_cancels_a_pending_update(updated):
+    c, calls = updated
+    c.post("/api/resume")
+    assert calls.index("cancel_for_resume") < calls.index("resume")
+
+
+def test_settings_say_what_kind_of_copy_this_is(updated):
+    c, _ = updated
+    assert c.get("/api/settings").json()["install_kind"] == "windows"
+
+
+def test_update_routes_are_404_without_an_updater(authed):
+    assert authed.get("/api/update").status_code == 404
+    assert authed.post("/api/update/check").status_code == 404
+    assert authed.get("/api/status").json()["update"] is None
