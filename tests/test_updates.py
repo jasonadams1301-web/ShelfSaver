@@ -74,3 +74,85 @@ def test_how_to_update_per_kind():
     assert "ghcr.io/jasonadams1301-web/shelfsaver:0.7.2" in how_to_update("docker", "0.7.2", "u")
     assert "install.sh" in how_to_update("linux", "0.7.2", "u")
     assert "wasn't installed by setup" in how_to_update("dev", "0.7.2", "u")
+
+
+# ---- download and unpack
+
+import io  # noqa: E402
+import zipfile  # noqa: E402
+
+from shelfsaver.updates import UpdateError, download, extract, prepare  # noqa: E402
+
+INIT = '"""ShelfSaver."""\n\n__version__ = "{}"\n'
+
+
+def make_release_zip(version: str, inner_version: str = None, extra: dict = None) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        top = f"ShelfSaver-{version}/"
+        z.writestr(top + "shelfsaver/__init__.py", INIT.format(inner_version or version))
+        z.writestr(top + "scripts/install.ps1", "# installer\n")
+        for name, data in (extra or {}).items():
+            z.writestr(name, data)
+    return buffer.getvalue()
+
+
+def serving(data: bytes, seen: list = None):
+    def fetch_stream(url):
+        if seen is not None:
+            seen.append(url)
+        return io.BytesIO(data)
+    return fetch_stream
+
+
+def test_prepare_unpacks_and_checks_the_version(tmp_path):
+    seen = []
+    root = prepare("0.7.2", tmp_path / "update", serving(make_release_zip("0.7.2"), seen))
+    assert (root / "scripts" / "install.ps1").is_file()
+    assert root.parent == tmp_path / "update" / "v0.7.2"
+    assert seen == ["https://github.com/jasonadams1301-web/ShelfSaver/archive/refs/tags/v0.7.2.zip"]
+
+
+def test_prepare_clears_an_older_download(tmp_path):
+    old = tmp_path / "update" / "v0.7.1"
+    old.mkdir(parents=True)
+    (old / "leftover.txt").write_text("x")
+    prepare("0.7.2", tmp_path / "update", serving(make_release_zip("0.7.2")))
+    assert not old.exists()
+
+
+def test_prepare_refuses_a_version_mismatch(tmp_path):
+    with pytest.raises(UpdateError, match="0.7.2"):
+        prepare("0.7.2", tmp_path / "update", serving(make_release_zip("0.7.2", inner_version="0.7.1")))
+
+
+@pytest.mark.parametrize("bad", ["../evil.txt", "ShelfSaver-0.7.2/../../evil.txt", "C:/evil.txt",
+                                 "/evil.txt"])
+def test_extract_refuses_paths_outside_the_folder(tmp_path, bad):
+    archive = tmp_path / "r.zip"
+    archive.write_bytes(make_release_zip("0.7.2", extra={bad: "boom"}))
+    dest = tmp_path / "deep" / "dest"
+    with pytest.raises(UpdateError):
+        extract(archive, dest)
+    assert not list(tmp_path.rglob("evil.txt"))
+
+
+def test_extract_needs_exactly_one_top_folder(tmp_path):
+    archive = tmp_path / "r.zip"
+    archive.write_bytes(make_release_zip("0.7.2", extra={"Other/readme.txt": "x"}))
+    with pytest.raises(UpdateError):
+        extract(archive, tmp_path / "dest")
+
+
+def test_download_stops_at_the_size_cap(tmp_path):
+    dest = tmp_path / "r.zip"
+    with pytest.raises(UpdateError, match="bigger than expected"):
+        download("u", dest, serving(b"x" * 2048), max_bytes=1024)
+    assert not dest.exists()
+
+
+def test_download_reports_network_errors(tmp_path):
+    def broken(url):
+        raise OSError("no network")
+    with pytest.raises(UpdateError, match="Couldn't download the update."):
+        download("u", tmp_path / "r.zip", broken)
