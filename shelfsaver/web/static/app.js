@@ -890,8 +890,9 @@
         var status = all[0];
         paused = (status.worker || {}).state === 'paused';
         var updating = !!status.update && status.update.state === 'pending';
+        var installing = !!status.update && (status.update.state === 'preparing' || status.update.state === 'installing');
         pausing = !paused && !!(status.worker || {}).pausing;
-        pause.hidden = false;
+        pause.hidden = installing;
         pause.textContent = paused ? 'Resume' : pausing ? 'Stop now' : 'Pause';
         pause.title = paused ? 'Start converting again' : pausing ? STOP_NOW_HELP : PAUSE_HELP;
         keepGoing.hidden = !pausing || updating;
@@ -1128,6 +1129,8 @@
       parts.push(el('button', { type: 'button', text: 'Cancel update', onclick: act.cancel }));
     } else if (!idle) {
       parts.push(el('p', { text: 'Updating to ' + update.version + '. ShelfSaver restarts by itself, and this page comes back when it is ready.' }));
+    } else if (update.finishing) {
+      parts.push(el('p', { text: 'Finishing the update…' }));
     } else {
       var c = update.check;
       if (c && c.status === 'newer') {
@@ -1159,7 +1162,7 @@
     function draw(update) {
       current = update;
       drawUpdates(box, update, version, actions);
-      if (update.state !== 'idle' && !watching) watch();
+      if ((update.state !== 'idle' || update.finishing) && !watching) watch();
     }
 
     function load() {
@@ -1183,7 +1186,7 @@
       api('GET', '/api/status').then(function (status) {
         if (wentDown) { window.location.reload(); return; }
         var update = status.update || { state: 'idle' };
-        if (update.state === 'idle') { watching = false; load(); return; }
+        if (update.state === 'idle' && !update.finishing) { watching = false; load(); return; }
         drawUpdates(box, update, version, actions);
         current = update;
         window.setTimeout(watch, REFRESH_MS);

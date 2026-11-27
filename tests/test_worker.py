@@ -2376,3 +2376,33 @@ def test_restore_pause_keeps_the_message(env):
     env.worker.resume()
     env.worker.restore_pause(None)
     assert env.worker.status()["state"] == "paused" and env.worker.status()["message"] is None
+
+
+def test_a_parked_file_is_placed_while_paused_for_an_update(env):
+    env.queue_video()
+    env.free["library"] = 0
+    env.worker.process_one()
+    assert env.worker._parked is not None
+    env.worker.pause_after_file()
+    env.worker.finish_parked_while_paused(True)
+    assert env.worker.ready_for_update() is False
+    env.free["library"] = 10 ** 13
+    env.worker.process_one()
+    assert env.worker._parked is None and env.status() == "converted"
+    assert env.worker.ready_for_update() is True
+
+
+def test_a_parked_file_waits_during_an_ordinary_pause(env):
+    env.queue_video()
+    env.free["library"] = 0
+    env.worker.process_one()
+    env.worker.pause()
+    env.free["library"] = 10 ** 13
+    assert env.worker.process_one() is False
+    assert env.worker._parked is not None
+
+
+def test_pause_asked_for_during_a_file_counts_as_paused(env):
+    env.worker._file_started()
+    env.worker.pause_after_file()
+    assert env.worker.pause_state() == (True, None)

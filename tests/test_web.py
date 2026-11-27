@@ -1860,6 +1860,9 @@ class StubUpdater:
     def cancel_for_resume(self):
         self.calls.append("cancel_for_resume")
 
+    def installing(self):
+        return False
+
 
 @pytest.fixture
 def updated(parts):
@@ -1949,3 +1952,22 @@ def test_update_result_is_shown_after_restart():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "'Updated to '" in app_js
     assert "didn't finish. The previous version is still running." in app_js
+
+
+def test_resume_is_refused_while_an_update_installs(parts):
+    db, worker, scanner, config = parts
+    calls = []
+    worker.calls = calls
+    stub = StubUpdater(calls)
+    stub.installing = lambda: True
+    with TestClient(create_app(db, worker, scanner, config, updater=stub)) as c:
+        assert c.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+        answer = c.post("/api/resume")
+        assert answer.status_code == 409 and "update" in answer.json()["detail"]
+        assert "resume" not in calls
+
+
+def test_pages_follow_an_update_until_its_result_arrives():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "update.finishing" in app_js and "Finishing the update" in app_js
+    assert "var installing =" in app_js  # Home hides Resume while an update installs

@@ -530,6 +530,10 @@ def create_app(db, worker, scanner, config, drives: Optional[DriveHealth] = None
     @api.post("/resume")
     def resume():
         if updater is not None:
+            if updater.installing():
+                # The installer is about to stop the app; a new file would be cut off part way.
+                raise HTTPException(status_code=409, detail="An update is being installed. "
+                                    "ShelfSaver restarts by itself in a moment.")
             updater.cancel_for_resume()  # resuming means "carry on", not "update once paused"
         worker.resume()
         return {"worker": worker.status()}

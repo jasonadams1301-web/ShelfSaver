@@ -256,6 +256,7 @@ class Updater:
         self._was_paused = False
         self._pause_message: Optional[str] = None
         self._previous: Optional[dict] = None  # an earlier update whose result isn't known yet
+        self._installing_since = 0.0
 
     @property
     def _state_path(self) -> Path:
@@ -300,22 +301,38 @@ class Updater:
             if not check["can_update"]:
                 self._message = check["how"] or "This copy can't update itself."
                 return self._status_locked()
+            if self._previous is not None:
+                self._message = "The last update is still finishing. Try again in a minute."
+                return self._status_locked()
             was_paused, message = self._worker.pause_state()
             self._was_paused, self._pause_message = was_paused, message
             self._state, self._version, self._message = "pending", check["version"], None
+        self._worker.finish_parked_while_paused(True)
         if not was_paused:
             self._worker.pause_after_file()
         logger.info("Update to %s asked for; it starts once no file is under way", check["version"])
         return self.status()
 
+    def installing(self) -> bool:
+        """True from the download on: the app is about to be stopped, so work mustn't restart."""
+        with self._lock:
+            return self._state in ("preparing", "installing")
+
     def cancel(self) -> dict:
-        if self._cancel_pending() and not self._was_paused:
-            self._worker.resume()
+        if self._cancel_pending():
+            self._release_worker()
         return self.status()
+
+    def _release_worker(self) -> None:
+        """Undo what start() did to the worker: lift only the update's own pause."""
+        self._worker.finish_parked_while_paused(False)
+        if not self._was_paused:
+            self._worker.resume()
 
     def cancel_for_resume(self) -> None:
         """Resume was pressed: drop a pending update; the caller resumes the worker itself."""
-        self._cancel_pending()
+        if self._cancel_pending():
+            self._worker.finish_parked_while_paused(False)
 
     def _cancel_pending(self) -> bool:
         with self._lock:
@@ -336,6 +353,7 @@ class Updater:
 
     def tick(self) -> None:
         self._finish_if_done()
+        self._watch_install()
         with self._lock:
             if self._state != "pending" or not self._worker.ready_for_update():
                 return
@@ -345,18 +363,55 @@ class Updater:
             root = prepare(version, self._dir, self._fetch_stream)
             self._write_state(version)
             self._run_task(root / "scripts" / "install.ps1", self._dir)
-        except (UpdateError, OSError) as error:
-            message = str(error) if isinstance(error, UpdateError) else "Couldn't prepare the update."
-            logger.warning("Update to %s stopped: %s", version, message)
+        except Exception as error:  # noqa: BLE001 - whatever it was, the update can't go on
+            if isinstance(error, UpdateError):
+                message = str(error)
+                logger.warning("Update to %s stopped: %s", version, message)
+            else:
+                message = "Couldn't prepare the update."
+                logger.warning("Update to %s stopped", version, exc_info=True)
             self._state_path.unlink(missing_ok=True)
             with self._lock:
                 self._state, self._version, self._message = "idle", None, message
-            if not self._was_paused:
-                self._worker.resume()
+            self._release_worker()
             return
         with self._lock:
             self._state = "installing"
+            self._installing_since = self._clock()
         logger.info("Installing %s: ShelfSaver will restart", version)
+
+    def _watch_install(self) -> None:
+        """The installer stops this app when it swaps versions. If it finishes (or gives up for
+        30 minutes) and this app is still running, it failed before getting that far."""
+        with self._lock:
+            if self._state != "installing":
+                return
+            version = self._version
+            if not self._done_path.exists() and \
+                    self._clock() - self._installing_since < STALE_SECONDS:
+                return
+        logger.warning("The update to %s didn't finish; this version is still running", version)
+        result = {"ok": False, "version": version, "log_tail": self._log_tail()}
+        self._tidy_up()
+        with self._lock:
+            self._state, self._version, self._message = "idle", None, None
+            self._last_result = result
+        self._release_worker()
+
+    def _log_tail(self) -> str:
+        try:
+            lines = _read_text_any(self._dir / "install.log").splitlines()
+        except OSError:
+            return ""
+        return "\n".join(lines[-LOG_TAIL_LINES:])
+
+    def _tidy_up(self) -> None:
+        self._state_path.unlink(missing_ok=True)
+        self._done_path.unlink(missing_ok=True)
+        try:
+            self._remove_task()
+        except Exception:  # noqa: BLE001 - a leftover task is harmless and retried next time
+            logger.warning("Couldn't remove the finished update task")
 
     def _write_state(self, version: str) -> None:
         self._done_path.unlink(missing_ok=True)
@@ -405,23 +460,13 @@ class Updater:
         if not done and self._clock() - previous["started_at"] < STALE_SECONDS:
             return
         ok = self._current == previous["version"]
-        result = {"ok": ok, "version": previous["version"], "log_tail": ""}
-        if not ok:
-            try:
-                lines = _read_text_any(self._dir / "install.log").splitlines()
-                result["log_tail"] = "\n".join(lines[-LOG_TAIL_LINES:])
-            except OSError:
-                pass
+        result = {"ok": ok, "version": previous["version"],
+                  "log_tail": "" if ok else self._log_tail()}
         if ok:
             logger.info("Updated to %s", previous["version"])
         else:
             logger.warning("The update to %s didn't finish", previous["version"])
-        self._state_path.unlink(missing_ok=True)
-        self._done_path.unlink(missing_ok=True)
-        try:
-            self._remove_task()
-        except Exception:  # noqa: BLE001 - a leftover task is harmless and retried next time
-            logger.warning("Couldn't remove the finished update task")
+        self._tidy_up()
         with self._lock:
             self._previous = None
             self._last_result = result
@@ -433,6 +478,7 @@ class Updater:
                             and not self._worker.ready_for_update())
         return {"state": self._state, "version": self._version, "message": self._message,
                 "check": self._check, "last_result": self._last_result, "kind": self._kind,
+                "finishing": self._previous is not None,
                 "waiting_for_room": waiting_for_room}
 
 

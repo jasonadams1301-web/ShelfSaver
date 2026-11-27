@@ -176,6 +176,11 @@ class FakeWorker:
         self.ready = ready
         self.calls = []
 
+    finish_parked = False
+
+    def finish_parked_while_paused(self, allowed):
+        self.finish_parked = allowed
+
     def pause_state(self):
         return self.paused, (self.message if self.paused else None)
 
@@ -540,3 +545,88 @@ def test_a_failed_check_logs_why(caplog):
     with caplog.at_level("WARNING", logger="shelfsaver.updates"):
         check_latest("0.7.1", fetch)
     assert "certificate verify failed" in caplog.text
+
+
+# ---- Fixes from the final review
+
+import http.client  # noqa: E402
+
+
+def test_an_installer_that_fails_before_stopping_the_app_is_reported(tmp_path):
+    worker = FakeWorker()
+    updater, runs, removed = make_updater(tmp_path, worker=worker)
+    updater.check()
+    updater.start()
+    updater.tick()
+    assert updater.status()["state"] == "installing"
+    folder = tmp_path / "data" / "update"
+    (folder / "install.log").write_text("Checking Python\nSetup did not finish: no Python\n")
+    (folder / "done.txt").write_text("1")
+    updater.tick()
+    state = updater.status()
+    assert state["state"] == "idle" and state["last_result"]["ok"] is False
+    assert "no Python" in state["last_result"]["log_tail"]
+    assert worker.calls[-1] == "resume" and removed == [True]
+    assert not state_file(tmp_path).exists() and not (folder / "done.txt").exists()
+
+
+def test_an_installer_that_never_finishes_is_reported_after_30_minutes(tmp_path):
+    now = [1000.0]
+    worker = FakeWorker(paused=True, message=BREAKER)
+    updater, _, _ = make_updater(tmp_path, worker=worker, clock=lambda: now[0])
+    updater.check()
+    updater.start()
+    updater.tick()
+    now[0] += STALE_SECONDS - 1
+    updater.tick()
+    assert updater.status()["state"] == "installing"
+    now[0] += 2
+    updater.tick()
+    assert updater.status()["state"] == "idle"
+    assert updater.status()["last_result"]["ok"] is False
+    assert "resume" not in worker.calls  # the owner's own pause stays
+
+
+def test_an_unexpected_error_while_preparing_goes_back_to_idle(tmp_path):
+    def cut_off(url):
+        raise http.client.IncompleteRead(b"")
+    worker = FakeWorker()
+    updater, runs, _ = make_updater(tmp_path, worker=worker, stream=cut_off)
+    updater.check()
+    updater.start()
+    updater.tick()
+    state = updater.status()
+    assert state["state"] == "idle" and state["message"] == "Couldn't prepare the update."
+    assert worker.calls[-1] == "resume" and runs == []
+
+
+def test_the_worker_may_place_a_parked_file_only_while_an_update_waits(tmp_path):
+    worker = FakeWorker(ready=False)
+    updater, _, _ = make_updater(tmp_path, worker=worker)
+    updater.check()
+    updater.start()
+    assert worker.finish_parked is True
+    updater.cancel()
+    assert worker.finish_parked is False
+
+
+def test_finishing_is_shown_and_a_new_update_waits_for_it(tmp_path):
+    write_state(tmp_path, done=False, started_at=1000.0 - 60)
+    updater, runs, _ = make_updater(tmp_path, current="0.7.1")
+    updater.finish_previous()
+    assert updater.status()["finishing"] is True
+    updater.check()
+    state = updater.start()
+    assert state["state"] == "idle" and state["message"]
+    (tmp_path / "data" / "update" / "done.txt").write_text("1")
+    updater.tick()
+    assert updater.status()["finishing"] is False and runs == []
+
+
+def test_installing_says_when_resume_must_wait(tmp_path):
+    updater, _, _ = make_updater(tmp_path)
+    assert updater.installing() is False
+    updater.check()
+    updater.start()
+    updater.tick()
+    assert updater.installing() is True
