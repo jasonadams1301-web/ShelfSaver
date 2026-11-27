@@ -835,8 +835,8 @@ def test_settings_show_the_app_version(authed):
     from shelfsaver import __version__
     assert authed.get("/api/settings").json()["version"] == __version__
     page = (STATIC / "settings.html").read_text(encoding="utf-8")
-    assert 'id="version"' in page
-    assert "'ShelfSaver ' + data.version" in (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'id="updates"' in page  # the version is shown in the Updates section
+    assert "'ShelfSaver ' + version" in (STATIC / "app.js").read_text(encoding="utf-8")
 
 
 def test_settings_include_the_mcp_token_and_command(authed, parts):
@@ -1832,3 +1832,142 @@ def test_the_commentary_option_says_what_it_does_and_that_it_cannot_be_undone():
 def test_both_library_dialogs_send_the_commentary_setting():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert app_js.count("remove_commentary: commentary.input.checked") == 2
+
+
+# ---- updates
+
+class StubUpdater:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def status(self, consume=False):
+        self.calls.append(("status", consume))
+        return {"state": "pending", "version": "0.7.2", "message": None, "check": None,
+                "last_result": None, "kind": "windows"}
+
+    def check(self):
+        self.calls.append("check")
+        return {"status": "newer", "version": "0.7.2"}
+
+    def start(self):
+        self.calls.append("start")
+        return {"state": "pending"}
+
+    def cancel(self):
+        self.calls.append("cancel")
+        return {"state": "idle"}
+
+    def cancel_for_resume(self):
+        self.calls.append("cancel_for_resume")
+
+    def installing(self):
+        return False
+
+
+@pytest.fixture
+def updated(parts):
+    db, worker, scanner, config = parts
+    calls = []
+    worker.calls = calls  # one list, so the order of updater and worker calls shows
+    with TestClient(create_app(db, worker, scanner, config, updater=StubUpdater(calls))) as c:
+        assert c.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+        yield c, calls
+
+
+def test_update_routes_need_login(parts):
+    db, worker, scanner, config = parts
+    with TestClient(create_app(db, worker, scanner, config, updater=StubUpdater([]))) as c:
+        assert c.get("/api/update").status_code == 401
+        for url in ["/api/update/check", "/api/update/start", "/api/update/cancel"]:
+            assert c.post(url).status_code == 401, url
+
+
+def test_update_routes_call_the_updater(updated):
+    c, calls = updated
+    assert c.post("/api/update/check").json() == {"status": "newer", "version": "0.7.2"}
+    assert c.post("/api/update/cancel").json() == {"state": "idle"}
+    assert c.get("/api/update").json()["state"] == "pending"
+    assert calls == ["check", "cancel", ("status", True)]
+
+
+def test_update_start_ignores_a_version_in_the_body(updated):
+    c, calls = updated
+    assert c.post("/api/update/start", json={"version": "9.9.9"}).json() == {"state": "pending"}
+    assert calls == ["start"]
+
+
+def test_status_includes_the_update_state(updated):
+    c, calls = updated
+    body = c.get("/api/status").json()
+    assert body["update"]["state"] == "pending" and ("status", False) in calls
+
+
+def test_resume_cancels_a_pending_update(updated):
+    c, calls = updated
+    c.post("/api/resume")
+    assert calls.index("cancel_for_resume") < calls.index("resume")
+
+
+def test_settings_say_what_kind_of_copy_this_is(updated):
+    c, _ = updated
+    assert c.get("/api/settings").json()["install_kind"] == "windows"
+
+
+def test_update_routes_are_404_without_an_updater(authed):
+    assert authed.get("/api/update").status_code == 404
+    assert authed.post("/api/update/check").status_code == 404
+    assert authed.get("/api/status").json()["update"] is None
+
+
+def _function_body(source, name):
+    start = source.index("function " + name + "(")
+    end = source.index("\n  function ", start + 1)
+    return source[start:end]
+
+
+def test_settings_has_an_updates_section():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    settings = (STATIC / "settings.html").read_text(encoding="utf-8")
+    assert 'id="updates"' in settings and 'id="version"' not in settings
+    for text in ["'Check for updates'", "'/api/update/check'", "'Update to '",
+                 "You're on the newest version", "'Cancel update'", "'See it on GitHub'"]:
+        assert text in app_js, text
+
+
+def test_release_notes_are_shown_as_text():
+    body = _function_body((STATIC / "app.js").read_text(encoding="utf-8"), "drawUpdates")
+    assert "innerHTML" not in body and "c.notes" in body
+    assert "'https://github.com/'" in body  # only GitHub links are made clickable
+
+
+def test_home_shows_a_pending_update():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "'Updating to '" in app_js and "' once this file is finished'" in app_js
+    assert "once this file has room on the library drive" in app_js
+    assert 'id="cancel-update"' in index
+
+
+def test_update_result_is_shown_after_restart():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "'Updated to '" in app_js
+    assert "didn't finish. The previous version is still running." in app_js
+
+
+def test_resume_is_refused_while_an_update_installs(parts):
+    db, worker, scanner, config = parts
+    calls = []
+    worker.calls = calls
+    stub = StubUpdater(calls)
+    stub.installing = lambda: True
+    with TestClient(create_app(db, worker, scanner, config, updater=stub)) as c:
+        assert c.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+        answer = c.post("/api/resume")
+        assert answer.status_code == 409 and "update" in answer.json()["detail"]
+        assert "resume" not in calls
+
+
+def test_pages_follow_an_update_until_its_result_arrives():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "update.finishing" in app_js and "Finishing the update" in app_js
+    assert "var installing =" in app_js  # Home hides Resume while an update installs

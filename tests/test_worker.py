@@ -2344,3 +2344,65 @@ def test_end_to_end_strip_only_removes_a_commentary_track(env, monkeypatch, hard
     assert [s.title for s in info.streams if s.kind == "audio"] == ["English"]
     tracks = json.loads(env.run_row()["tracks_json"])
     assert [t["title"] for t in tracks["removed"]] == ["Director's Commentary"]
+
+
+# ---- Hooks for the updater
+
+def test_ready_for_update_needs_a_pause_and_no_file(env):
+    assert env.worker.ready_for_update() is False
+    env.worker.pause()
+    assert env.worker.ready_for_update() is True
+    env.worker._file_started()
+    assert env.worker.ready_for_update() is False
+
+
+def test_a_parked_file_holds_back_the_update(env):
+    env.worker.pause()
+    env.worker._parked = object()
+    assert env.worker.ready_for_update() is False
+
+
+def test_pause_state_reports_the_reason(env):
+    env.worker.pause(worker_module.BREAKER_MESSAGE)
+    assert env.worker.pause_state() == (True, worker_module.BREAKER_MESSAGE)
+    env.worker.resume()
+    assert env.worker.pause_state() == (False, None)
+
+
+def test_restore_pause_keeps_the_message(env):
+    env.worker.restore_pause(worker_module.BREAKER_MESSAGE)
+    assert env.worker.status()["state"] == "paused"
+    assert env.worker.status()["message"] == worker_module.BREAKER_MESSAGE
+    env.worker.resume()
+    env.worker.restore_pause(None)
+    assert env.worker.status()["state"] == "paused" and env.worker.status()["message"] is None
+
+
+def test_a_parked_file_is_placed_while_paused_for_an_update(env):
+    env.queue_video()
+    env.free["library"] = 0
+    env.worker.process_one()
+    assert env.worker._parked is not None
+    env.worker.pause_after_file()
+    env.worker.finish_parked_while_paused(True)
+    assert env.worker.ready_for_update() is False
+    env.free["library"] = 10 ** 13
+    env.worker.process_one()
+    assert env.worker._parked is None and env.status() == "converted"
+    assert env.worker.ready_for_update() is True
+
+
+def test_a_parked_file_waits_during_an_ordinary_pause(env):
+    env.queue_video()
+    env.free["library"] = 0
+    env.worker.process_one()
+    env.worker.pause()
+    env.free["library"] = 10 ** 13
+    assert env.worker.process_one() is False
+    assert env.worker._parked is not None
+
+
+def test_pause_asked_for_during_a_file_counts_as_paused(env):
+    env.worker._file_started()
+    env.worker.pause_after_file()
+    assert env.worker.pause_state() == (True, None)

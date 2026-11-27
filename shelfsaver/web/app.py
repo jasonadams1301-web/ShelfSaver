@@ -307,7 +307,8 @@ class CrossSiteGuard:
         await self.app(scope, receive, send)
 
 
-def create_app(db, worker, scanner, config, drives: Optional[DriveHealth] = None) -> FastAPI:
+def create_app(db, worker, scanner, config, drives: Optional[DriveHealth] = None,
+               updater=None) -> FastAPI:
     # Without one passed in (tests), drive health is only read, never checked in the background.
     drives = drives if drives is not None else DriveHealth(db)
     mcp_server = build_mcp(db, worker, config, drives)
@@ -495,6 +496,7 @@ def create_app(db, worker, scanner, config, drives: Optional[DriveHealth] = None
             "offline_libraries": [{"id": l.id, "name": l.name}
                                   for l in db.list_libraries() if l.status == "offline"],
             "drive_notices": drives.notices(),
+            "update": updater.status() if updater is not None else None,
         }
 
     @api.get("/drives")
@@ -527,8 +529,39 @@ def create_app(db, worker, scanner, config, drives: Optional[DriveHealth] = None
 
     @api.post("/resume")
     def resume():
+        if updater is not None:
+            if updater.installing():
+                # The installer is about to stop the app; a new file would be cut off part way.
+                raise HTTPException(status_code=409, detail="An update is being installed. "
+                                    "ShelfSaver restarts by itself in a moment.")
+            updater.cancel_for_resume()  # resuming means "carry on", not "update once paused"
         worker.resume()
         return {"worker": worker.status()}
+
+    # ---- updates (GitHub is only contacted from check and start, when the owner presses them)
+
+    def need_updater():
+        if updater is None:
+            raise HTTPException(status_code=404, detail="Updates aren't available here.")
+        return updater
+
+    @api.get("/update")
+    def update_state():
+        """The update state for the Settings page; a finished update's result is shown once."""
+        return need_updater().status(consume=True)
+
+    @api.post("/update/check")
+    def update_check():
+        return need_updater().check()
+
+    @api.post("/update/start")
+    def update_start():
+        """Install the version the last check found. The request body is never read."""
+        return need_updater().start()
+
+    @api.post("/update/cancel")
+    def update_cancel():
+        return need_updater().cancel()
 
     # ---- history and files
 
@@ -853,6 +886,7 @@ def create_app(db, worker, scanner, config, drives: Optional[DriveHealth] = None
             "mcp_token": token,
             "mcp_command": command,
             "version": __version__,
+            "install_kind": updater.status()["kind"] if updater is not None else None,
         }
 
     @api.patch("/settings")

@@ -280,6 +280,8 @@ class Worker:
         self._next_locked_try: dict[int, float] = {}  # file id -> when a locked file is next due
         self._swap_retry_asked: set[int] = set()  # run ids the owner asked to try now
         self._parked: Optional[_Job] = None  # converted and verified, waiting for library room
+        self._finish_parked = False  # place a parked file even while paused (an update waits)
+        self._placing_parked = False  # True while doing that, so the pause doesn't stop it
         self._failed_encodes: list[int] = []  # file ids of the current failures in a row
         self._holding_lock = threading.Lock()  # held while holding is cleared or a swap begins
         self._claimed: set[int] = set()  # run ids whose swap is being advanced or resolved
@@ -327,6 +329,42 @@ class Worker:
             self._pause_message = None
             self._paused.set()
         logger.info("Paused: the current file is finished")
+
+    # ---- For the updater ----
+
+    def pause_state(self) -> tuple[bool, Optional[str]]:
+        """Whether conversions are paused (or will be once the file under way is finished), and
+        the reason shown with it."""
+        with self._lock:
+            if self._paused.is_set():
+                return True, self._pause_message
+            return self._pause_after, None
+
+    def finish_parked_while_paused(self, allowed: bool) -> None:
+        """While an update waits, a converted file waiting for library room is still placed.
+
+        Its conversion only lives in memory, so the update can't go ahead until it is placed;
+        an ordinary pause leaves it waiting as before.
+        """
+        with self._lock:
+            self._finish_parked = allowed
+
+    def ready_for_update(self) -> bool:
+        """True when the app can be stopped without losing work.
+
+        Paused, no file under way, and no converted file waiting for room on its library drive:
+        a parked file only lives in memory, so a restart would throw that conversion away.
+        """
+        with self._lock:
+            return self._paused.is_set() and not self._busy and self._parked is None
+
+    def restore_pause(self, message: Optional[str]) -> None:
+        """Put back a pause that was in place before an update restarted the app."""
+        with self._lock:
+            self._pause_after = False
+            self._pause_message = message
+            self._paused.set()
+        logger.info("Still paused after the update: %s", message or "at the owner's request")
 
     def _file_started(self) -> None:
         with self._lock:
@@ -471,7 +509,10 @@ class Worker:
             self._status["speed"] = speed
 
     def _should_stop(self) -> bool:
-        return self._paused.is_set() or (self._stop is not None and self._stop.is_set())
+        if self._stop is not None and self._stop.is_set():
+            return True
+        # A parked file placed while paused for an update finishes: the pause is what it is for.
+        return self._paused.is_set() and not self._placing_parked
 
     # ---- The main loop ----
 
@@ -498,7 +539,17 @@ class Worker:
     def process_one(self) -> bool:
         """Do the next piece of work. False means there was nothing to do right now."""
         if self._paused.is_set():
-            return False
+            with self._lock:
+                place_parked = self._finish_parked and self._parked is not None
+            if not place_parked:
+                return False
+            self._file_started()
+            self._placing_parked = True
+            try:
+                return self._guarded(self._parked, self._place_new_file)
+            finally:
+                self._placing_parked = False
+                self._file_ended()
         worked = self._advance_due_swaps()
         self._requeue_due_locked_files()
         if self._parked is not None:

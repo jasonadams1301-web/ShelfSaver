@@ -2,18 +2,20 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import threading
 
 import uvicorn
 
-from . import hostos
+from . import __version__, hostos
 from .config import load_config
 from .db import Database
 from .drive_health import DriveHealth
 from .logs import setup_logging
 from .scanner import Scanner
+from .updates import Updater, install_kind, remove_task, run_install_task
 from .web import create_app
 from .worker import Worker
 
@@ -71,6 +73,15 @@ def server_options(config) -> dict:
             "forwarded_allow_ips": config.trusted_proxies or None}
 
 
+def make_updater(worker, config) -> Updater:
+    kind = install_kind(is_windows=hostos.IS_WINDOWS, prefix=sys.prefix,
+                        program_files=os.environ.get("ProgramFiles", ""), env=os.environ)
+    if kind == "windows":
+        return Updater(worker, config.data_dir, __version__, kind,
+                       run_task=run_install_task, remove_task=remove_task)
+    return Updater(worker, config.data_dir, __version__, kind)
+
+
 def main() -> None:
     config = load_config()
     lock = acquire_instance_lock(config.data_dir)
@@ -83,6 +94,8 @@ def main() -> None:
     scanner = Scanner(db, config)
     worker.recover()
     drives = DriveHealth(db)
+    updater = make_updater(worker, config)
+    updater.finish_previous()  # before the worker starts, so an earlier pause is back in place
 
     stop = threading.Event()
     stop_on_sigterm(stop)
@@ -90,12 +103,13 @@ def main() -> None:
         threading.Thread(target=worker.run_forever, args=(stop,), name="worker"),
         threading.Thread(target=scanner.start, args=(stop,), name="scanner"),
         threading.Thread(target=drives.run_forever, args=(stop,), name="drives", daemon=True),
+        threading.Thread(target=updater.run_forever, args=(stop,), name="updates", daemon=True),
     ]
     for thread in threads:
         thread.start()
     try:
         server = uvicorn.Server(uvicorn.Config(
-            create_app(db, worker, scanner, config, drives), **server_options(config)))
+            create_app(db, worker, scanner, config, drives, updater), **server_options(config)))
         server.run()
     finally:
         stop.set()

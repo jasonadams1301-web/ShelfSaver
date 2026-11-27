@@ -309,6 +309,9 @@ dialog h3 { margin: 0 0 10px; font-size: 18px; }
 .setting { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
 .setting:last-child { border-bottom: 0; }
 .setting h3 { margin: 0 0 4px; font-size: 16px; }
+#updates h3 { margin: 0 0 8px; font-size: 16px; }
+.update-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+pre.notes { max-height: 16em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; font-size: 14px; margin: 0 0 10px; }
 .blackouts { list-style: none; margin: 8px 0; padding: 0; }
 .drive { margin: 10px 0; }
 .drive-disks { margin: 4px 0 0; padding-left: 20px; }
