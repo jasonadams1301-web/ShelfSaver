@@ -28,17 +28,20 @@
     <p>ShelfSaver needs a scratch disk: a drive with plenty of free space where it can work on one file at a time. Nothing is converted until you choose one.</p>
     <a class="button primary" href="/settings">Choose a scratch disk in Settings</a>
   </section>
-  <section class="stats" aria-label="Totals">
-    <div class="stat hero"><b id="stat-saved">&ndash;</b><span>Space saved</span></div>
-    <div class="stat"><b id="stat-converted">&ndash;</b><span>Files converted</span></div>
-    <div class="stat"><b id="stat-remaining">&ndash;</b><span>Still to do</span></div>
-  </section>
-  <section class="stats" aria-label="This PC right now">
-    <div class="stat"><b id="stat-cpu">&ndash;</b><span>CPU</span></div>
-    <div class="stat" title="The busier of the graphics card and its video encoder"><b id="stat-gpu">&ndash;</b><span>GPU</span></div>
-    <div class="stat"><b id="stat-ram">&ndash;</b><span>RAM</span></div>
+  <section class="shelf" aria-label="Space given back">
+    <div class="shelf-head">
+      <p class="shelf-freed"><b id="stat-saved">&ndash;</b>freed</p>
+      <p class="shelf-counts muted"><b id="stat-converted">&ndash;</b> files converted &middot; <b id="stat-remaining">&ndash;</b> to go</p>
+    </div>
+    <div class="shelf-bar" id="shelf-bar" role="img" aria-label="Your libraries now, and the space given back">
+      <i class="on-shelf" id="shelf-on"></i><i class="given-back" id="shelf-back-part"></i>
+    </div>
+    <div class="shelf-legend small"><span class="muted" id="shelf-now"></span><span class="back" id="shelf-back"></span></div>
   </section>
   <section id="now" class="card" aria-live="polite"></section>
+  <p class="use muted small" aria-label="This PC right now">CPU <b id="stat-cpu">&ndash;</b> &middot;
+    <span title="The busier of the graphics card and its video encoder">GPU <b id="stat-gpu">&ndash;</b></span> &middot;
+    RAM <b id="stat-ram">&ndash;</b></p>
   <h2>Libraries</h2>
   <div class="libs" id="libs"></div>
   <h2 id="history-title">History</h2>
