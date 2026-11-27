@@ -1,6 +1,9 @@
 """Checking GitHub for a newer release, and updating an installed Windows copy."""
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from shelfsaver.updates import check_latest, how_to_update, install_kind, parse_version
@@ -445,3 +448,71 @@ def test_github_is_not_contacted_until_asked(tmp_path):
     updater.status()
     updater.tick()
     assert asked == []
+
+
+# ---- The Windows hand-off
+
+from pathlib import Path as _Path  # noqa: E402
+
+from shelfsaver.updates import task_command, venv_base_python  # noqa: E402
+
+
+def test_task_command_runs_the_installer_and_records_the_exit():
+    script = _Path(r"C:\ProgramData\ShelfSaver\update\v0.7.2\ShelfSaver-0.7.2\scripts\install.ps1")
+    folder = _Path(r"C:\ProgramData\ShelfSaver\update")
+    python = _Path(r"C:\Program Files\Python312\python.exe")
+    command = task_command(script, folder, python)
+    assert f"& '{script}' -Python '{python}'" in command
+    assert rf"*> '{folder}\install.log'" in command
+    assert "$LASTEXITCODE" in command and rf"'{folder}\done.txt'" in command
+
+
+def test_task_command_without_a_python_lets_the_installer_find_one():
+    command = task_command(_Path(r"C:\u\install.ps1"), _Path(r"C:\u"), None)
+    assert "-Python" not in command
+
+
+def test_task_command_doubles_single_quotes():
+    command = task_command(_Path(r"C:\it's\install.ps1"), _Path(r"C:\it's"), None)
+    assert r"& 'C:\it''s\install.ps1'" in command
+
+
+def test_venv_base_python_reads_pyvenv_cfg(tmp_path):
+    home = tmp_path / "Python312"
+    home.mkdir()
+    (home / "python.exe").write_bytes(b"")
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text(f"home = {home}\ninclude-system-site-packages = false\n")
+    assert venv_base_python(venv) == home / "python.exe"
+
+
+def test_venv_base_python_is_none_without_a_usable_home(tmp_path):
+    assert venv_base_python(tmp_path) is None
+    (tmp_path / "pyvenv.cfg").write_text("home = C:\\nowhere\\at\\all\n")
+    assert venv_base_python(tmp_path) is None
+
+
+# ---- install.ps1
+
+SCRIPT = _Path(__file__).resolve().parent.parent / "scripts" / "install.ps1"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="needs Windows PowerShell")
+def test_install_script_parses():
+    command = ("$e = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+               f"'{SCRIPT}', [ref]$null, [ref]$e) | Out-Null; $e.Count")
+    out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command],
+                         capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "0", out.stdout + out.stderr
+
+
+def test_install_script_allows_only_the_update_folder():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "[string]$Python" in text
+    guard = text[text.index("foreach ($guarded in"):text.index("# --- Stop / remove helpers")]
+    assert "Join-Path $DataDir 'update'" in guard and "continue" in guard
+    uninstall = text[text.index("if ($Uninstall) {"):text.index("if ($RemoveData) { Fail")]
+    assert "'ShelfSaver-Update'" in uninstall
+    assert "Remove-Directory (Join-Path $DataDir 'update')" in uninstall
+    assert text.rstrip().endswith("exit 0")

@@ -11,6 +11,8 @@ import logging
 import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -427,3 +429,92 @@ class Updater:
     def _status_locked(self) -> dict:
         return {"state": self._state, "version": self._version, "message": self._message,
                 "check": self._check, "last_result": self._last_result, "kind": self._kind}
+
+
+# ---- The Windows hand-off: a one-off SYSTEM task runs the new release's installer
+#
+# The installer stops ShelfSaver with `taskkill /T` on every process from the program folder, so it
+# can't be a child of the app: it would be killed along with it. Task Scheduler starts it instead,
+# as SYSTEM, the way install.ps1's own Test-SystemRuns does.
+
+TASK_NAME = "ShelfSaver-Update"
+
+
+def _ps_quote(value) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def venv_base_python(prefix: Path) -> Optional[Path]:
+    """The python.exe this venv was built from (`home` in pyvenv.cfg), if it still exists.
+
+    The installer runs as SYSTEM, whose PATH may not include a Python installed for one user, so
+    it is told which one built the running copy.
+    """
+    try:
+        text = (Path(prefix) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "home" and value.strip():
+            candidate = Path(value.strip()) / "python.exe"
+            return candidate if candidate.is_file() else None
+    return None
+
+
+def task_command(install_ps1: Path, update_dir: Path, python: Optional[Path]) -> str:
+    """The PowerShell the update task runs: the installer, its log, and its exit code."""
+    log = _ps_quote(Path(update_dir) / "install.log")
+    done = _ps_quote(Path(update_dir) / "done.txt")
+    python_arg = f" -Python {_ps_quote(python)}" if python else ""
+    return "\n".join([
+        "$LASTEXITCODE = $null",
+        f"& {_ps_quote(install_ps1)}{python_arg} *> {log}",
+        "$code = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }",
+        f"Set-Content -LiteralPath {done} -Value $code -Encoding Ascii",
+    ])
+
+
+def _encoded(script: str) -> str:
+    import base64
+    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+
+def _run_powershell(script: str, error: str) -> None:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-EncodedCommand", _encoded(script)],
+            capture_output=True, text=True, timeout=60, creationflags=flags)
+    except (OSError, subprocess.SubprocessError) as failure:
+        raise UpdateError(error) from failure
+    if result.returncode != 0:
+        logger.warning("%s %s", error, (result.stderr or result.stdout).strip()[-500:])
+        raise UpdateError(error)
+
+
+def run_install_task(install_ps1: Path, update_dir: Path) -> None:
+    """Register and start the one-off SYSTEM task that installs the new release."""
+    command = task_command(install_ps1, update_dir, venv_base_python(Path(sys.prefix)))
+    # The command is passed encoded, so the installer's own "stop every ShelfSaver process" search,
+    # which looks for the program folder in command lines, never matches the update task itself.
+    argument = ("-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
+                + _encoded(command))
+    _run_powershell("\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        f"$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument {_ps_quote(argument)}",
+        "$who = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest",
+        "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries"
+        " -ExecutionTimeLimit (New-TimeSpan -Hours 2)",
+        f"Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $action -Principal $who"
+        " -Settings $settings -Force | Out-Null",
+        f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)}",
+    ]), "Couldn't start the installer.")
+
+
+def remove_task() -> None:
+    """Remove the finished update task (it can't remove itself while it runs)."""
+    _run_powershell(
+        f"Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Confirm:$false"
+        " -ErrorAction SilentlyContinue", "Couldn't remove the update task.")

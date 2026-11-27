@@ -11,13 +11,17 @@
   -Uninstall   Stops ShelfSaver and removes its scheduled task, firewall rule and program
                folder. The data folder is kept unless -RemoveData is also given.
   -RemoveData  With -Uninstall only: also delete the data folder (settings, history, login).
+  -Python      The python.exe to build with, instead of searching for one. ShelfSaver's Update
+               button passes the one the running copy was built from, because the background
+               (SYSTEM) account may not find a Python installed for one person.
 
   Your video libraries, holding folders and scratch disks are never touched.
 #>
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
-    [switch]$RemoveData
+    [switch]$RemoveData,
+    [string]$Python
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,6 +71,9 @@ function Test-Inside([string]$child, [string]$parent) {
 
 # Refuse to run from inside a folder this script is about to replace. Nothing has been touched yet.
 foreach ($guarded in $AppDir, $NewDir, $OldDir, $DataDir) {
+    # The Update button unpacks the new release into the data folder's update area, which only
+    # SYSTEM and Administrators can write, and runs setup from there. Nothing in it is replaced.
+    if ($guarded -eq $DataDir -and (Test-Inside $RepoRoot (Join-Path $DataDir 'update'))) { continue }
     if (Test-Inside $RepoRoot $guarded) {
         Write-Host ''
         Write-Host "This copy of ShelfSaver is inside $guarded, which setup replaces." -ForegroundColor Red
@@ -158,7 +165,11 @@ if ($Uninstall) {
         Remove-NetFirewallRule -DisplayName $RuleName
         Say 'Removed the firewall rule.'
     }
+    if (Get-ScheduledTask -TaskName 'ShelfSaver-Update' -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName 'ShelfSaver-Update' -Confirm:$false
+    }
     foreach ($dir in $AppDir, $NewDir, $OldDir) { Remove-Directory $dir }
+    Remove-Directory (Join-Path $DataDir 'update')
     Say "Removed the program folder ($AppDir)."
     if ($RemoveData) {
         Remove-Directory $DataDir
@@ -383,7 +394,11 @@ try {
     Protect-DataFolder
 
     Step 'Checking Python'
-    $Python = Find-Python
+    $Python = if ($Python -and (Test-Path -LiteralPath $Python -PathType Leaf)) {
+        Resolve-RealPath $Python
+    } else {
+        Find-Python
+    }
     if (-not $Python) {
         Install-WithWinget 'Python.Python.3.12' 'Python'
         $Python = Find-Python
@@ -571,3 +586,4 @@ Say ''
 Say "If the other device can't connect, check that nothing else on this PC is blocking port $Port."
 Say "Your settings and history live in $DataDir and are kept when you update or uninstall."
 Say "The comparison-clip tool is installed at $AppDir\scripts\make_compare_clips.py"
+exit 0
