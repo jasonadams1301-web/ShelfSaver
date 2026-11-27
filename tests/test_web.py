@@ -1971,3 +1971,46 @@ def test_pages_follow_an_update_until_its_result_arrives():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "update.finishing" in app_js and "Finishing the update" in app_js
     assert "var installing =" in app_js  # Home hides Resume while an update installs
+
+
+def test_app_js_never_names_two_functions_the_same():
+    # A second `function x` silently replaces the first in the whole file: 0.7.1 shipped a
+    # conversion-speed helper that clashed with the bitrate one, so Home showed "0.0 Mbps".
+    import collections
+    import re
+    names = re.findall(r"^  function (\w+)\(",  # the file-level helpers, where clashes bite
+                        (STATIC / "app.js").read_text(encoding="utf-8"), re.M)
+    twice = [name for name, n in collections.Counter(names).items() if n > 1]
+    assert twice == []
+
+
+# ---- the 0.8.1 look
+
+def test_home_leads_with_the_shelf():
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'id="shelf-bar"' in index and 'id="stat-saved"' in index
+    assert index.index('id="shelf-bar"') < index.index('id="now"') < index.index('id="stat-cpu"')
+    assert "' on the shelf now'" in app_js and "' given back'" in app_js
+
+
+def test_left_alone_rows_are_quiet():
+    body = _function_body((STATIC / "app.js").read_text(encoding="utf-8"), "createHistory")
+    assert "' quiet'" in body
+
+
+def test_drive_health_is_a_table_with_warm_disks_marked():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    body = _function_body(app_js, "diskRow")
+    assert "'warm'" in body and "WARM_DISK_C" in body
+    assert "var WARM_DISK_C = 45;" in app_js
+
+
+def test_release_notes_get_light_formatting_as_text():
+    body = _function_body((STATIC / "app.js").read_text(encoding="utf-8"), "formatNotes")
+    assert "innerHTML" not in body and "notes-head" in body and "notes-item" in body
+
+
+def test_settings_sections_are_separate_cards():
+    settings = (STATIC / "settings.html").read_text(encoding="utf-8")
+    assert 'class="settings-stack" id="settings"' in settings

@@ -5,6 +5,7 @@
 
   var page = document.body.getAttribute('data-page');
   var REFRESH_MS = 2000;
+  var WARM_DISK_C = 45;  // drive health marks hard drives this warm
   var PAGE_SIZE = 100;
   var redirecting = false;
 
@@ -77,7 +78,7 @@
   }
 
   // How fast FFmpeg is converting: "148 fps · 6.2x". Empty until it reports real numbers.
-  function fmtRate(fps, speed) {
+  function fmtSpeed(fps, speed) {
     var parts = [];
     if (fps) parts.push(Math.round(fps) + ' fps');
     if (speed) parts.push(speed.toFixed(1) + 'x');
@@ -493,7 +494,8 @@
     function summaryRow(row) {
       var open = state.openId === row.id;
       var tr = el('tr', {
-        class: 'row', tabindex: 0, role: 'button', 'aria-expanded': open ? 'true' : 'false',
+        class: 'row' + (row.status === 'skipped' || row.status === 'missing' ? ' quiet' : ''),
+        tabindex: 0, role: 'button', 'aria-expanded': open ? 'true' : 'false',
         'data-focus': 'row-' + row.id
       },
         el('td', { class: 'name' }, el('span', { class: 'caret', text: open ? '▾' : '▸' }),
@@ -796,6 +798,19 @@
     return (today ? '' : DAY_NAMES[(end.getDay() + 6) % 7] + ' ') + fmtClock(end);
   }
 
+  // The shelf: every library as it is now, with the space given back hatched on the end.
+  function drawShelf(saved, libs) {
+    var onShelf = 0;
+    libs.forEach(function (lib) { if (typeof lib.size_bytes === 'number') onShelf += lib.size_bytes; });
+    var whole = onShelf + saved;
+    var back = whole > 0 ? Math.max(saved / whole * 100, saved > 0 ? 1 : 0) : 0;
+    byId('shelf-on').style.width = (100 - back) + '%';
+    byId('shelf-back-part').style.width = back + '%';
+    byId('shelf-back-part').hidden = back === 0;
+    byId('shelf-now').textContent = fmtSize(onShelf) + ' on the shelf now';
+    byId('shelf-back').textContent = saved > 0 ? fmtSize(saved) + ' given back' : '';
+  }
+
   function drawNow(box, status) {
     var worker = status.worker || {};
     var update = status.update;
@@ -811,7 +826,7 @@
       line = known ? Math.round(worker.percent) + '%' +
         (worker.eta_seconds !== null && worker.eta_seconds !== undefined ? ' · ' + fmtLeft(worker.eta_seconds) : '')
         : 'Getting started…';
-      var rate = fmtRate(worker.fps, worker.speed);
+      var rate = fmtSpeed(worker.fps, worker.speed);
       if (rate) line += ' · ' + rate;
       if (worker.pausing) {
         line += update && update.state === 'pending'
@@ -881,7 +896,7 @@
         add(box, [el('a', { class: 'lib-link', href: '/library?id=' + lib.id },
           lib.name, lib.status === 'offline' ? el('span', { class: 'tag off', text: 'Offline' }) : null)]);
       });
-      add(box, [el('button', { type: 'button', class: 'primary small', text: 'Add a library',
+      add(box, [el('button', { type: 'button', class: 'quiet small', text: 'Add a library',
         onclick: function () { addLibraryDialog(function () { refresh(); }); } })]);
     }
 
@@ -899,6 +914,7 @@
         cancelUpdate.hidden = !updating;
         byId('first-run').hidden = !status.no_scratch;
         byId('stat-saved').textContent = fmtSize(status.stats.saved_bytes);
+        drawShelf(status.stats.saved_bytes, all[1]);
         byId('stat-converted').textContent = fmtCount(status.stats.converted);
         byId('stat-remaining').textContent = fmtCount(status.stats.remaining);
         showNotices(byId('message'), status);
@@ -1038,6 +1054,7 @@
       // Sizes as shown, not in bytes: free space moves all the time during a conversion, and
       // redrawing would replace the Options button under the pointer.
       var shown = function (bytes) { return bytes === null || bytes === undefined ? null : fmtSize(bytes); };
+      var figure = function (value, label, kind) { return el('span', { class: kind || null }, el('b', { text: value }), label); };
       var signature = JSON.stringify([lib.id, lib.name, lib.path, lib.status, lib.level, lib.stats,
         lib.english_only, lib.shrink_h265, lib.remove_commentary, shown(lib.size_bytes), shown(lib.free_bytes)]);
       if (head.getAttribute('data-sig') === signature) return;
@@ -1047,13 +1064,16 @@
           el('h1', { text: lib.name }),
           el('div', { class: 'muted small path' }, lib.path + ' · ',
             lib.status === 'offline' ? el('strong', { text: 'Offline' }) : 'Watching for new files'),
-          el('div', { class: 'muted small', text: fmtCount(lib.stats.total) + ' total · ' +
-            fmtSize(lib.stats.saved_bytes) + ' saved · ' +
-            plural(lib.stats.converted, 'file', 'files') + ' converted · ' + lib.stats.remaining + ' still to do' }),
-          el('div', { class: 'muted small', text: fmtSize(lib.size_bytes) + ' in the library' +
-            (lib.free_bytes === null || lib.free_bytes === undefined ? '' : ' · ' + fmtSize(lib.free_bytes) + ' free on the drive') })),
+          el('div', { class: 'figures' },
+            figure(fmtSize(lib.stats.saved_bytes), ' saved', 'saved'),
+            figure(fmtCount(lib.stats.converted), ' converted'),
+            figure(fmtCount(lib.stats.remaining), ' to do'),
+            figure(fmtCount(lib.stats.total), ' files'),
+            figure(fmtSize(lib.size_bytes), ' in the library'),
+            lib.free_bytes === null || lib.free_bytes === undefined ? null
+              : figure(fmtSize(lib.free_bytes), ' free on the drive'))),
         el('div', { class: 'libs' },
-          el('span', { class: 'pill', text: levelName(lib.level) }),
+          el('span', { class: 'level', text: levelName(lib.level) + ' quality' }),
           el('button', { type: 'button', class: 'small', text: 'Options', onclick: function () { openOptions(lib); } })));
     }
 
@@ -1109,6 +1129,20 @@
 
   // ---- Updates (Settings). GitHub is only asked when the owner presses Check for updates.
 
+  // Release notes are Markdown on GitHub. Shown as text (never HTML), with the marks people
+  // would see as clutter turned into plain headings and bullets.
+  function formatNotes(text) {
+    return String(text).split(/\r?\n/).map(function (line) {
+      var clean = line.replace(/\*\*|__|`/g, '').trim();
+      if (!clean) return null;
+      var heading = clean.match(/^#+\s*(.*)$/);
+      if (heading) return el('p', { class: 'notes-head', text: heading[1] });
+      var item = clean.match(/^[-*]\s+(.*)$/);
+      if (item) return el('p', { class: 'notes-item', text: '• ' + item[1] });
+      return el('p', { text: clean });
+    });
+  }
+
   function drawUpdates(box, update, version, act) {
     var parts = [el('h3', { text: 'Updates' })];
     var result = update.last_result;
@@ -1135,7 +1169,7 @@
       var c = update.check;
       if (c && c.status === 'newer') {
         parts.push(el('p', null, el('strong', { text: c.version + ' is available' })));
-        if (c.notes) parts.push(el('pre', { class: 'notes', text: c.notes }));
+        if (c.notes) parts.push(el('div', { class: 'notes' }, formatNotes(c.notes)));
         if (c.url && c.url.indexOf('https://github.com/') === 0) {
           parts.push(el('p', { class: 'small' }, el('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer', text: 'See it on GitHub' })));
         }
@@ -1289,18 +1323,24 @@
 
     function known(value) { return value !== null && value !== undefined; }
 
-    function diskLine(disk) {
-      var about = [disk.media, known(disk.size) ? fmtSize(disk.size) : null].filter(Boolean);
-      var numbers = [];
-      if (known(disk.temperature) && disk.temperature > 0) numbers.push(disk.temperature + '°C');
-      if (known(disk.power_on_hours)) numbers.push(fmtCount(disk.power_on_hours) + ' h');
-      if (known(disk.read_errors) || known(disk.write_errors)) {
-        numbers.push(plural((disk.read_errors || 0) + (disk.write_errors || 0), 'error', 'errors'));
-      }
-      if (disk.media === 'SSD' && known(disk.wear)) numbers.push(disk.wear + '% worn');
-      if (disk.operational && disk.operational !== 'OK') numbers.push(disk.operational);
-      return el('li', null, disk.name + (about.length ? ' · ' + about.join(' · ') : '') + ' · ',
-        rating(disk.health), numbers.length ? ' · ' + numbers.join(' · ') : null);
+    function diskRow(disk) {
+      var temp = known(disk.temperature) && disk.temperature > 0 ? disk.temperature : null;
+      var errors = known(disk.read_errors) || known(disk.write_errors)
+        ? (disk.read_errors || 0) + (disk.write_errors || 0) : null;
+      var health = [rating(disk.health)];
+      if (disk.media === 'SSD' && known(disk.wear)) health.push(' · ' + disk.wear + '% worn');
+      if (disk.operational && disk.operational !== 'OK') health.push(' · ' + disk.operational);
+      var none = '–';
+      return el('tr', null,
+        el('td', { class: 'disk-name', text: disk.name }),
+        el('td', { text: disk.media || none }),
+        el('td', { class: 'num', text: known(disk.size) ? fmtSize(disk.size) : none }),
+        el('td', { class: ['num', temp !== null && temp >= WARM_DISK_C ? 'warm' : null].filter(Boolean).join(' '),
+          title: temp !== null && temp >= WARM_DISK_C ? 'Warm. Hard drives are happiest below about 45°C.' : null,
+          text: temp === null ? none : temp + '°C' }),
+        el('td', { class: 'num', text: known(disk.power_on_hours) ? fmtCount(disk.power_on_hours) + ' h' : none }),
+        el('td', { class: 'num', text: errors === null ? none : fmtCount(errors) }),
+        el('td', null, health));
     }
 
     function driveBlock(drive) {
@@ -1312,8 +1352,12 @@
       }
       else if (drive.kind === 'unknown') head.push(el('span', { class: 'muted', text: "Can't be checked" }));
       head.push(el('span', { class: 'muted small', text: ' (' + drive.used_by.join(', ') + ')' }));
-      return el('div', { class: 'drive' }, el('div', null, head),
-        drive.disks.length ? el('ul', { class: 'drive-disks' }, drive.disks.map(diskLine)) : null);
+      return el('div', { class: 'drive' }, el('div', { class: 'drive-head' }, head),
+        drive.disks.length ? el('div', { class: 'table-wrap' }, el('table', null,
+          el('thead', null, el('tr', null, ['Disk', 'Type', 'Size', 'Temp', 'Hours', 'Errors', 'Health'].map(function (name) {
+            return el('th', { scope: 'col', text: name });
+          }))),
+          el('tbody', null, drive.disks.map(diskRow)))) : null);
     }
 
     function drawDrives(holder, result) {
