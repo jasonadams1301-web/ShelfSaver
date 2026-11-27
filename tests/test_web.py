@@ -1971,3 +1971,14 @@ def test_pages_follow_an_update_until_its_result_arrives():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "update.finishing" in app_js and "Finishing the update" in app_js
     assert "var installing =" in app_js  # Home hides Resume while an update installs
+
+
+def test_app_js_never_names_two_functions_the_same():
+    # A second `function x` silently replaces the first in the whole file: 0.7.1 shipped a
+    # conversion-speed helper that clashed with the bitrate one, so Home showed "0.0 Mbps".
+    import collections
+    import re
+    names = re.findall(r"^  function (\w+)\(",  # the file-level helpers, where clashes bite
+                        (STATIC / "app.js").read_text(encoding="utf-8"), re.M)
+    twice = [name for name, n in collections.Counter(names).items() if n > 1]
+    assert twice == []

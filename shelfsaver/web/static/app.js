@@ -77,7 +77,7 @@
   }
 
   // How fast FFmpeg is converting: "148 fps · 6.2x". Empty until it reports real numbers.
-  function fmtRate(fps, speed) {
+  function fmtSpeed(fps, speed) {
     var parts = [];
     if (fps) parts.push(Math.round(fps) + ' fps');
     if (speed) parts.push(speed.toFixed(1) + 'x');
@@ -811,7 +811,7 @@
       line = known ? Math.round(worker.percent) + '%' +
         (worker.eta_seconds !== null && worker.eta_seconds !== undefined ? ' · ' + fmtLeft(worker.eta_seconds) : '')
         : 'Getting started…';
-      var rate = fmtRate(worker.fps, worker.speed);
+      var rate = fmtSpeed(worker.fps, worker.speed);
       if (rate) line += ' · ' + rate;
       if (worker.pausing) {
         line += update && update.state === 'pending'
