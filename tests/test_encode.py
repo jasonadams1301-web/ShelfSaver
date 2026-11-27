@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from shelfsaver.encode import build_command, encoder_works, output_extension, run_ffmpeg
+from shelfsaver.encode import (build_command, encoder_works, output_extension, parse_fps,
+                               parse_speed, run_ffmpeg)
 from shelfsaver.models import Stream
 from shelfsaver.probe import probe
 from shelfsaver.quality import LEVELS
@@ -249,3 +250,33 @@ def test_ffmpeg_dies_when_the_app_is_killed(tmp_path):
         assert not _alive(pid)
     finally:
         parent.kill()
+
+
+# ---- conversion speed
+
+@pytest.mark.parametrize("text, expected", [
+    ("148.3", 148.3), ("  62 ", 62.0), ("0.00", None), ("0", None), ("N/A", None), ("", None),
+    ("nan", None), ("inf", None), ("-5", None),
+])
+def test_frame_rate_is_read_from_the_progress_line(text, expected):
+    assert parse_fps(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("6.2x", 6.2), ("   3.41x", 3.41), ("N/A", None), ("0x", None), ("", None), ("x", None),
+    ("nanx", None),
+])
+def test_speed_is_read_from_the_progress_line(text, expected):
+    assert parse_speed(text) == expected
+
+
+def test_conversion_reports_its_frame_rate_and_speed():
+    # -re reads the clip at playback speed, so FFmpeg has time to settle on a frame rate.
+    cmd = ["ffmpeg", "-v", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=3",
+           "-c:v", "libx264", "-preset", "ultrafast", "-f", "null", "-"]
+    rates = []
+    result = run_ffmpeg(cmd, 3, lambda f: None, lambda: False,
+                        on_rate=lambda fps, speed: rates.append((fps, speed)))
+    assert result.returncode == 0
+    assert any(fps and fps > 0 for fps, _ in rates), rates
+    assert any(speed and speed > 0 for _, speed in rates), rates

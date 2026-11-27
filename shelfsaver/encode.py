@@ -1,11 +1,12 @@
 """Build and run the ffmpeg conversion command."""
 from __future__ import annotations
 
+import math
 import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from .encoders import DEFAULT_ENCODER, Encoder
 from .jobobject import kill_with_app
@@ -137,8 +138,29 @@ def encoder_works(ffmpeg, encoder: Encoder = DEFAULT_ENCODER) -> bool:
         return False
 
 
+def _positive(text: str) -> Optional[float]:
+    try:
+        value = float(text.strip())
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def parse_fps(text: str) -> Optional[float]:
+    """The frame rate from FFmpeg's `fps=` progress line, or None before it has a real one."""
+    return _positive(text)
+
+
+def parse_speed(text: str) -> Optional[float]:
+    """The speed against playback from FFmpeg's `speed=` progress line, such as `6.2x`."""
+    text = text.strip()
+    return _positive(text[:-1]) if text.endswith("x") else None
+
+
 def run_ffmpeg(cmd: list, duration: float, on_progress: Callable[[float], None],
-               should_stop: Callable[[], bool]) -> EncodeResult:
+               should_stop: Callable[[], bool],
+               on_rate: Optional[Callable[[Optional[float], Optional[float]], None]] = None,
+               ) -> EncodeResult:
     full = list(cmd[:1]) + ["-progress", "pipe:1", "-nostats"] + list(cmd[1:])
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -157,6 +179,7 @@ def run_ffmpeg(cmd: list, duration: float, on_progress: Callable[[float], None],
     reader.start()
 
     stopped = False
+    fps = speed = None
     try:
         for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").strip()
@@ -167,6 +190,12 @@ def run_ffmpeg(cmd: list, duration: float, on_progress: Callable[[float], None],
                     us = -1
                 if us >= 0 and duration > 0:
                     on_progress(min(1.0, us / 1_000_000 / duration))
+            elif line.startswith("fps="):
+                fps = parse_fps(line[4:])
+            elif line.startswith("speed="):
+                speed = parse_speed(line[6:])
+            elif line.startswith("progress=") and on_rate is not None:
+                on_rate(fps, speed)
             if should_stop():
                 stopped = True
                 break

@@ -93,7 +93,7 @@ class Env:
         self.card_checks += 1
         return self.card_works
 
-    def _fake_encode(self, cmd, duration, on_progress, should_stop):
+    def _fake_encode(self, cmd, duration, on_progress, should_stop, **_):
         self.encodes += 1
         kw = self.encode_output or dict(vcodec="libx265", crf=35, seconds=2, size=SIZE)
         make_video(Path(cmd[-1]), **kw)
@@ -107,7 +107,7 @@ class Env:
         self.use_encode(self._fake_encode)
 
     def fail_encodes(self):
-        def failing(cmd, duration, on_progress, should_stop):
+        def failing(cmd, duration, on_progress, should_stop, **_):
             self.encodes += 1
             return EncodeResult(1, False, "hardware says no")
         self.use_encode(failing)
@@ -293,8 +293,8 @@ def test_success_records_the_outcome(env):
 def test_nothing_queued_returns_false_and_is_idle(env):
     assert env.worker.process_one() is False
     assert env.worker.status() == {"state": "idle", "file": None, "step": None, "percent": None,
-                                   "eta_seconds": None, "message": None, "blackout_until": None,
-                                   "pausing": False}
+                                   "eta_seconds": None, "fps": None, "speed": None,
+                                   "message": None, "blackout_until": None, "pausing": False}
 
 
 def test_holding_off_replaces_without_keeping_a_copy(env):
@@ -320,7 +320,7 @@ def test_decide_skip_records_reason_and_moves_on(env):
 def test_ffmpeg_gets_only_the_fixed_scratch_names(env):
     seen = []
 
-    def spy(cmd, duration, on_progress, should_stop):
+    def spy(cmd, duration, on_progress, should_stop, **_):
         seen.append(list(cmd))
         return env._fake_encode(cmd, duration, on_progress, should_stop)
 
@@ -378,7 +378,7 @@ def test_a_file_already_converting_finishes_when_a_blackout_starts(env):
     env.monkeypatch.setattr(worker_module, "_local_now", lambda: MONDAY_NIGHT)
     first = env.queue_video()
 
-    def blackout_arrives(cmd, duration, on_progress, should_stop):
+    def blackout_arrives(cmd, duration, on_progress, should_stop, **_):
         env.db.set_setting("blackouts", EVENINGS)
         return env._fake_encode(cmd, duration, on_progress, should_stop)
 
@@ -442,7 +442,7 @@ def test_not_worth_it_is_skipped_not_failed(env):
 
 
 def test_original_changed_during_convert_is_requeued_not_overwritten(env):
-    def changes_original(cmd, duration, on_progress, should_stop):
+    def changes_original(cmd, duration, on_progress, should_stop, **_):
         env.lib_file.write_bytes(b"newer")
         return env._fake_encode(cmd, duration, on_progress, should_stop)
 
@@ -650,7 +650,7 @@ def test_three_encoder_failures_pause_and_requeue(env):
 
 
 def test_clean_exit_with_an_unreadable_result_counts_as_an_encoder_failure(env):
-    def garbage(cmd, duration, on_progress, should_stop):
+    def garbage(cmd, duration, on_progress, should_stop, **_):
         Path(cmd[-1]).write_bytes(b"not a video")
         return EncodeResult(0, False, "looked fine")
 
@@ -666,7 +666,7 @@ def test_clean_exit_with_an_unreadable_result_counts_as_an_encoder_failure(env):
 
 
 def test_unreadable_result_is_not_logged_as_a_bad_exit(env, caplog):
-    def garbage(cmd, duration, on_progress, should_stop):
+    def garbage(cmd, duration, on_progress, should_stop, **_):
         Path(cmd[-1]).write_bytes(b"not a video")
         return EncodeResult(0, False, "looked fine")
 
@@ -715,7 +715,7 @@ def test_bad_file_failures_do_not_trip_the_breaker(env):
 
 
 def test_a_stop_is_not_an_encoder_failure(env):
-    def stopped(cmd, duration, on_progress, should_stop):
+    def stopped(cmd, duration, on_progress, should_stop, **_):
         return EncodeResult(255, True, "")
 
     env.use_encode(stopped)
@@ -728,7 +728,7 @@ def test_a_stop_is_not_an_encoder_failure(env):
 
 
 def test_ffmpeg_that_will_not_start_counts_as_an_encoder_failure(env):
-    def missing(cmd, duration, on_progress, should_stop):
+    def missing(cmd, duration, on_progress, should_stop, **_):
         raise FileNotFoundError("ffmpeg")
 
     env.card_works = False  # the card check needs FFmpeg too
@@ -1039,7 +1039,7 @@ def test_a_file_named_like_the_original_is_no_conflict_when_the_name_stays(env):
 
 
 def test_file_appearing_at_the_new_path_during_convert_fails_at_swap_time(env):
-    def someone_else_writes(cmd, duration, on_progress, should_stop):
+    def someone_else_writes(cmd, duration, on_progress, should_stop, **_):
         (env.lib / "film.mkv").write_bytes(b"someone else's file")
         return env._fake_encode(cmd, duration, on_progress, should_stop)
 
@@ -1100,7 +1100,7 @@ def test_unexpected_error_before_the_swap_fails_the_file_not_the_worker(env, mon
 # ---- Pause, resume and stop ----
 
 def waits_for_stop(started):
-    def fake(cmd, duration, on_progress, should_stop):
+    def fake(cmd, duration, on_progress, should_stop, **_):
         started.set()
         while not should_stop():
             time.sleep(0.01)
@@ -1140,7 +1140,7 @@ def test_pause_after_file_lets_the_current_file_finish(env):
     started, go_on = threading.Event(), threading.Event()
     real = env._fake_encode
 
-    def slow_then_good(cmd, duration, on_progress, should_stop):
+    def slow_then_good(cmd, duration, on_progress, should_stop, **_):
         started.set()
         assert go_on.wait(30)
         return real(cmd, duration, on_progress, should_stop)
@@ -1188,7 +1188,7 @@ def test_resume_while_waiting_for_the_file_cancels_the_pause(env):
     started, go_on = threading.Event(), threading.Event()
     real = env._fake_encode
 
-    def slow_then_good(cmd, duration, on_progress, should_stop):
+    def slow_then_good(cmd, duration, on_progress, should_stop, **_):
         started.set()
         assert go_on.wait(30)
         return real(cmd, duration, on_progress, should_stop)
@@ -1210,7 +1210,7 @@ def test_resume_while_waiting_for_the_file_cancels_the_pause(env):
 def test_a_breaker_pause_keeps_its_message_over_a_waiting_pause(env):
     started, go_on = threading.Event(), threading.Event()
 
-    def trips_breaker(cmd, duration, on_progress, should_stop):
+    def trips_breaker(cmd, duration, on_progress, should_stop, **_):
         started.set()
         assert go_on.wait(30)
         env.worker.pause(BREAKER_MESSAGE)
@@ -1257,7 +1257,7 @@ def test_pause_while_copying_to_the_library_removes_the_partial_temp(env, monkey
 
 
 def test_nonzero_exit_during_a_pause_is_treated_as_the_pause(env):
-    def dies_as_paused(cmd, duration, on_progress, should_stop):
+    def dies_as_paused(cmd, duration, on_progress, should_stop, **_):
         env.worker.pause()
         return EncodeResult(1, False, "terminated")  # exited before the stop was noticed
 
@@ -1326,7 +1326,7 @@ def test_run_forever_survives_an_unexpected_error(env):
 def test_status_can_be_read_while_working_and_shows_progress(env):
     seen = []
 
-    def reports(cmd, duration, on_progress, should_stop):
+    def reports(cmd, duration, on_progress, should_stop, **_):
         on_progress(0.5)
         seen.append(env.worker.status())
         return env._fake_encode(cmd, duration, on_progress, should_stop)
@@ -1337,6 +1337,36 @@ def test_status_can_be_read_while_working_and_shows_progress(env):
     assert seen[0]["state"] == "working" and seen[0]["step"] == "Converting"
     assert seen[0]["file"] == f.path and seen[0]["percent"] == 50
     assert seen[0]["eta_seconds"] is not None and seen[0]["eta_seconds"] >= 0
+
+
+def test_status_shows_the_conversion_speed_and_clears_it_for_the_next_step(env):
+    seen = []
+
+    def reports(cmd, duration, on_progress, should_stop, on_rate=None):
+        on_progress(0.5)
+        on_rate(148.3, 6.2)
+        seen.append(env.worker.status())
+        return env._fake_encode(cmd, duration, on_progress, should_stop)
+
+    env.use_encode(reports)
+    env.queue_video()
+    env.worker.process_one()
+    assert seen[0]["fps"] == 148.3 and seen[0]["speed"] == 6.2
+    assert env.worker.status()["fps"] is None and env.worker.status()["speed"] is None
+
+
+def test_status_keeps_the_speed_empty_until_ffmpeg_has_one(env):
+    seen = []
+
+    def reports(cmd, duration, on_progress, should_stop, on_rate=None):
+        on_rate(None, None)
+        seen.append(env.worker.status())
+        return env._fake_encode(cmd, duration, on_progress, should_stop)
+
+    env.use_encode(reports)
+    env.queue_video()
+    env.worker.process_one()
+    assert seen[0]["fps"] is None and seen[0]["speed"] is None
 
 
 # ---- Retry ----
@@ -1716,7 +1746,7 @@ def test_new_run_after_a_database_reset_leaves_a_kept_temp_alone(env, monkeypatc
 
 
 def test_a_name_collision_fails_the_run_and_overwrites_nothing(env):
-    def someone_took_the_name(cmd, duration, on_progress, should_stop):
+    def someone_took_the_name(cmd, duration, on_progress, should_stop, **_):
         env.incoming.mkdir(parents=True, exist_ok=True)
         (env.incoming / temp_name(env.run_row())).write_bytes(b"kept")
         return env._fake_encode(cmd, duration, on_progress, should_stop)
@@ -1916,7 +1946,7 @@ def test_conversion_time_leaves_out_waiting_for_room(env, monkeypatch):
     clock = {"now": 1000.0}
     monkeypatch.setattr(worker_module, "_now", lambda: clock["now"])
 
-    def slow_encode(cmd, duration, on_progress, should_stop):
+    def slow_encode(cmd, duration, on_progress, should_stop, **_):
         clock["now"] += 90.0
         return env._fake_encode(cmd, duration, on_progress, should_stop)
 
@@ -2128,7 +2158,7 @@ def test_a_full_conversion_that_misses_a_quarter_falls_back_to_removing_audio(en
     outputs = [dict(vcodec="libx265", crf=1, seconds=2, size=SIZE),   # barely smaller
                dict(vcodec="libx265", crf=35, seconds=2, size=SIZE)]  # the audio-only pass
 
-    def encode(cmd, duration, on_progress, should_stop):
+    def encode(cmd, duration, on_progress, should_stop, **_):
         env.encode_output = outputs.pop(0)
         return env._fake_encode(cmd, duration, on_progress, should_stop)
     env.use_encode(encode)
@@ -2242,7 +2272,7 @@ def test_the_encoder_is_chosen_before_each_file_not_during_one(env):
     env.worker.encoders = FakeChoice(before=chosen)
     seen = []
 
-    def encode(cmd, duration, on_progress, should_stop):
+    def encode(cmd, duration, on_progress, should_stop, **_):
         seen.append(env.worker.encoder)
         return env._fake_encode(cmd, duration, on_progress, should_stop)
 

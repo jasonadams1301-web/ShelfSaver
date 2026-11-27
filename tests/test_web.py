@@ -1723,6 +1723,13 @@ def test_pause_says_the_current_file_finishes_first():
     assert "Pausing once this file is finished" in app_js
 
 
+def test_home_shows_the_conversion_frame_rate_and_speed():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "' fps'" in app_js and "toFixed(1) + 'x'" in app_js
+    # The line redraws when only the speed changes, not just the percentage.
+    assert "worker.percent, worker.fps, worker.speed]" in app_js
+
+
 def test_stop_now_is_offered_while_waiting_for_the_file():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     index = (STATIC / "index.html").read_text(encoding="utf-8")

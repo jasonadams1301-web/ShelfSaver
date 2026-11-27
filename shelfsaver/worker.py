@@ -439,7 +439,8 @@ class Worker:
     @staticmethod
     def _idle_fields() -> dict:
         return {"state": "idle", "file": None, "step": None, "percent": None,
-                "eta_seconds": None, "message": None, "blackout_until": None}
+                "eta_seconds": None, "fps": None, "speed": None, "message": None,
+                "blackout_until": None}
 
     def _set_status(self, state: str, file: Optional[str] = None, step: Optional[str] = None,
                     message: Optional[str] = None) -> None:
@@ -463,6 +464,11 @@ class Worker:
             self._status["eta_seconds"] = (
                 round(elapsed / fraction * (1 - fraction)) if fraction > 0 else None
             )
+
+    def _on_rate(self, fps: Optional[float], speed: Optional[float]) -> None:
+        with self._lock:
+            self._status["fps"] = fps
+            self._status["speed"] = speed
 
     def _should_stop(self) -> bool:
         return self._paused.is_set() or (self._stop is not None and self._stop.is_set())
@@ -762,7 +768,8 @@ class Worker:
                             self.config.ffmpeg, self.encoder)
         convert_began = _now()
         try:
-            result = run_ffmpeg(cmd, job.info.duration, self._on_progress, self._should_stop)
+            result = run_ffmpeg(cmd, job.info.duration, self._on_progress, self._should_stop,
+                                on_rate=self._on_rate)
         except OSError as exc:
             result = EncodeResult(-1, False, f"FFmpeg could not start: {exc}")
         job.log_tail = _joined(job.log_tail, result.log_tail)

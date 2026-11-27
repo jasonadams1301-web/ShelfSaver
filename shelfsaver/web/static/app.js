@@ -76,6 +76,14 @@
     return 'about ' + hours + ' hours left';
   }
 
+  // How fast FFmpeg is converting: "148 fps · 6.2x". Empty until it reports real numbers.
+  function fmtRate(fps, speed) {
+    var parts = [];
+    if (fps) parts.push(Math.round(fps) + ' fps');
+    if (speed) parts.push(speed.toFixed(1) + 'x');
+    return parts.join(' · ');
+  }
+
   function fmtSpan(seconds) {
     if (seconds === null || seconds === undefined || seconds < 0) return '';
     if (seconds < 60) return 'less than a minute';
@@ -802,6 +810,8 @@
       line = known ? Math.round(worker.percent) + '%' +
         (worker.eta_seconds !== null && worker.eta_seconds !== undefined ? ' · ' + fmtLeft(worker.eta_seconds) : '')
         : 'Getting started…';
+      var rate = fmtRate(worker.fps, worker.speed);
+      if (rate) line += ' · ' + rate;
       if (worker.pausing) line += ' · Pausing once this file is finished';
     } else if (worker.state === 'paused') {
       title = 'Paused';
@@ -824,7 +834,7 @@
         scanning = null;
       }
     }
-    var signature = JSON.stringify([title, line, scanning, worker.percent]);
+    var signature = JSON.stringify([title, line, scanning, worker.percent, worker.fps, worker.speed]);
     if (box.getAttribute('data-sig') === signature) return;
     box.setAttribute('data-sig', signature);
     fill(box, el('div', { class: 'now-title', text: title }), bar, el('div', { class: 'muted small', text: line }),
