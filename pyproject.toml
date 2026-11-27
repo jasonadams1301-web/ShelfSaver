@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shelfsaver"
-version = "0.7.1"
+version = "0.8.0"
 description = "Watches video library folders and converts worthwhile files to H.265 on the GPU."
 requires-python = ">=3.10"
 license = "Apache-2.0"
