@@ -835,8 +835,8 @@ def test_settings_show_the_app_version(authed):
     from shelfsaver import __version__
     assert authed.get("/api/settings").json()["version"] == __version__
     page = (STATIC / "settings.html").read_text(encoding="utf-8")
-    assert 'id="version"' in page
-    assert "'ShelfSaver ' + data.version" in (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'id="updates"' in page  # the version is shown in the Updates section
+    assert "'ShelfSaver ' + version" in (STATIC / "app.js").read_text(encoding="utf-8")
 
 
 def test_settings_include_the_mcp_token_and_command(authed, parts):
@@ -1914,3 +1914,38 @@ def test_update_routes_are_404_without_an_updater(authed):
     assert authed.get("/api/update").status_code == 404
     assert authed.post("/api/update/check").status_code == 404
     assert authed.get("/api/status").json()["update"] is None
+
+
+def _function_body(source, name):
+    start = source.index("function " + name + "(")
+    end = source.index("\n  function ", start + 1)
+    return source[start:end]
+
+
+def test_settings_has_an_updates_section():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    settings = (STATIC / "settings.html").read_text(encoding="utf-8")
+    assert 'id="updates"' in settings and 'id="version"' not in settings
+    for text in ["'Check for updates'", "'/api/update/check'", "'Update to '",
+                 "You're on the newest version", "'Cancel update'", "'See it on GitHub'"]:
+        assert text in app_js, text
+
+
+def test_release_notes_are_shown_as_text():
+    body = _function_body((STATIC / "app.js").read_text(encoding="utf-8"), "drawUpdates")
+    assert "innerHTML" not in body and "c.notes" in body
+    assert "'https://github.com/'" in body  # only GitHub links are made clickable
+
+
+def test_home_shows_a_pending_update():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "'Updating to '" in app_js and "' once this file is finished'" in app_js
+    assert "once this file has room on the library drive" in app_js
+    assert 'id="cancel-update"' in index
+
+
+def test_update_result_is_shown_after_restart():
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "'Updated to '" in app_js
+    assert "didn't finish. The previous version is still running." in app_js

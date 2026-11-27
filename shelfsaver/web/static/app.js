@@ -798,6 +798,7 @@
 
   function drawNow(box, status) {
     var worker = status.worker || {};
+    var update = status.update;
     var title, line = null, bar = null;
     var scanning = scanLine(status.scanner);
     if (worker.state === 'working' && worker.file) {
@@ -812,7 +813,16 @@
         : 'Getting started…';
       var rate = fmtRate(worker.fps, worker.speed);
       if (rate) line += ' · ' + rate;
-      if (worker.pausing) line += ' · Pausing once this file is finished';
+      if (worker.pausing) {
+        line += update && update.state === 'pending'
+          ? ' · Updating to ' + update.version + ' once this file is finished'
+          : ' · Pausing once this file is finished';
+      }
+    } else if (update && update.state !== 'idle') {
+      title = 'Updating to ' + update.version;
+      line = update.state !== 'pending' ? 'ShelfSaver restarts by itself in a moment.'
+        : update.waiting_for_room ? 'Updating to ' + update.version + ' once this file has room on the library drive.'
+        : 'Starting in a moment.';
     } else if (worker.state === 'paused') {
       title = 'Paused';
       line = 'Nothing will be converted until you press Resume. A file that was stopped part way will start over.';
@@ -846,6 +856,7 @@
     drawHistoryTabs(byId('filters'), history);
     var pause = byId('pause');
     var keepGoing = byId('keep-going');
+    var cancelUpdate = byId('cancel-update');
     var paused = false, pausing = false;
 
     function control(button, url) {
@@ -858,6 +869,7 @@
       control(pause, paused ? '/api/resume' : pausing ? '/api/pause/now' : '/api/pause');
     });
     keepGoing.addEventListener('click', function () { control(keepGoing, '/api/resume'); });
+    cancelUpdate.addEventListener('click', function () { control(cancelUpdate, '/api/update/cancel'); });
 
     function drawLibraries(libs) {
       var signature = JSON.stringify(libs.map(function (l) { return [l.id, l.name, l.status]; }));
@@ -877,11 +889,13 @@
       return Promise.all([api('GET', '/api/status'), api('GET', '/api/libraries')]).then(function (all) {
         var status = all[0];
         paused = (status.worker || {}).state === 'paused';
+        var updating = !!status.update && status.update.state === 'pending';
         pausing = !paused && !!(status.worker || {}).pausing;
         pause.hidden = false;
         pause.textContent = paused ? 'Resume' : pausing ? 'Stop now' : 'Pause';
         pause.title = paused ? 'Start converting again' : pausing ? STOP_NOW_HELP : PAUSE_HELP;
-        keepGoing.hidden = !pausing;
+        keepGoing.hidden = !pausing || updating;
+        cancelUpdate.hidden = !updating;
         byId('first-run').hidden = !status.no_scratch;
         byId('stat-saved').textContent = fmtSize(status.stats.saved_bytes);
         byId('stat-converted').textContent = fmtCount(status.stats.converted);
@@ -1090,6 +1104,106 @@
     return el('div', { class: 'field-row' },
       el('p', { class: 'small', text: label }),
       el('pre', { class: 'mono', text: text }), button, status);
+  }
+
+  // ---- Updates (Settings). GitHub is only asked when the owner presses Check for updates.
+
+  function drawUpdates(box, update, version, act) {
+    var parts = [el('h3', { text: 'Updates' })];
+    var result = update.last_result;
+    if (result && result.ok) {
+      parts.push(el('p', { class: 'ok', text: 'Updated to ' + result.version + '.' }));
+    } else if (result) {
+      parts.push(el('p', { class: 'err', text: 'The update to ' + result.version + " didn't finish. The previous version is still running." }));
+      if (result.log_tail) parts.push(el('pre', { class: 'run-log', text: result.log_tail }));
+    }
+    var idle = update.state === 'idle';
+    parts.push(el('div', { class: 'update-line' },
+      el('span', { text: 'ShelfSaver ' + version }),
+      el('button', { type: 'button', text: 'Check for updates', disabled: !idle, onclick: act.check })));
+    if (update.state === 'pending') {
+      parts.push(el('p', { text: 'Updating to ' + update.version + (update.waiting_for_room
+        ? ' once this file has room on the library drive.'
+        : ' once this file is finished.') }));
+      parts.push(el('button', { type: 'button', text: 'Cancel update', onclick: act.cancel }));
+    } else if (!idle) {
+      parts.push(el('p', { text: 'Updating to ' + update.version + '. ShelfSaver restarts by itself, and this page comes back when it is ready.' }));
+    } else {
+      var c = update.check;
+      if (c && c.status === 'newer') {
+        parts.push(el('p', null, el('strong', { text: c.version + ' is available' })));
+        if (c.notes) parts.push(el('pre', { class: 'notes', text: c.notes }));
+        if (c.url && c.url.indexOf('https://github.com/') === 0) {
+          parts.push(el('p', { class: 'small' }, el('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer', text: 'See it on GitHub' })));
+        }
+        if (c.can_update) {
+          parts.push(el('button', { type: 'button', class: 'primary', text: 'Update to ' + c.version,
+            onclick: function () { act.start(c.version); } }));
+        } else if (c.how) {
+          parts.push(el('p', { class: 'muted small', text: c.how }));
+        }
+      } else if (c && c.status === 'current') {
+        parts.push(el('p', { class: 'muted small', text: "You're on the newest version (" + version + ').' }));
+      } else if (c) {
+        parts.push(el('p', { class: 'small err', text: c.message }));
+      }
+      if (update.message) parts.push(el('p', { class: 'small', role: 'status', text: update.message }));
+    }
+    fill(box, parts);
+  }
+
+  function initUpdates(box, version) {
+    var current = { state: 'idle' };
+    var wentDown = false, watching = false;
+
+    function draw(update) {
+      current = update;
+      drawUpdates(box, update, version, actions);
+      if (update.state !== 'idle' && !watching) watch();
+    }
+
+    function load() {
+      return api('GET', '/api/update').then(draw, function () {});
+    }
+
+    function send(url) {
+      Array.prototype.forEach.call(box.querySelectorAll('button'), function (b) { b.disabled = true; });
+      api('POST', url).then(load, function (problem) {
+        var shown = {};
+        Object.keys(current).forEach(function (key) { shown[key] = current[key]; });
+        shown.message = messageOf(problem);
+        draw(shown);
+      });
+    }
+
+    // While an update is on its way, follow it. When the server stops and comes back, reload the
+    // page so it shows the new version and the update's result.
+    function watch() {
+      watching = true;
+      api('GET', '/api/status').then(function (status) {
+        if (wentDown) { window.location.reload(); return; }
+        var update = status.update || { state: 'idle' };
+        if (update.state === 'idle') { watching = false; load(); return; }
+        drawUpdates(box, update, version, actions);
+        current = update;
+        window.setTimeout(watch, REFRESH_MS);
+      }, function () {
+        wentDown = true;
+        window.setTimeout(watch, REFRESH_MS);
+      });
+    }
+
+    var actions = {
+      check: function () { send('/api/update/check'); },
+      start: function (next) {
+        if (window.confirm('Update ShelfSaver to ' + next + '? If a file is being converted, it is finished first. ShelfSaver then restarts, which takes a minute or two.')) {
+          send('/api/update/start');
+        }
+      },
+      cancel: function () { send('/api/update/cancel'); }
+    };
+    drawUpdates(box, current, version, actions);
+    load();
   }
 
   function initSettings() {
@@ -1362,9 +1476,10 @@
 
     function load() {
       return api('GET', '/api/settings').then(function (loaded) {
+        var first = !data;
         data = loaded;
-        byId('version').textContent = 'ShelfSaver ' + data.version;
         draw();
+        if (first) initUpdates(byId('updates'), data.version);
       }, function (problem) {
         if (problem.status !== 0) fill(box, el('p', { class: 'err', text: messageOf(problem) }));
       });

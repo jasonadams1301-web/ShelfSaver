@@ -72,9 +72,11 @@ def check_latest(current: str, fetch_json: Callable[[str], dict] = fetch_json) -
         tag = answer.get("tag_name") if isinstance(answer, dict) else None
         latest = parse_version(tag) if isinstance(tag, str) else None
         mine = parse_version(current)
-    except Exception:  # noqa: BLE001 - any trouble reaching or reading GitHub is the same to the owner
+    except Exception as error:  # noqa: BLE001 - any trouble reaching or reading GitHub is the same to the owner
+        logger.warning("Couldn't check GitHub for updates: %r", error)
         return CheckResult("failed", message=CHECK_FAILED)
     if latest is None or mine is None:
+        logger.warning("GitHub's newest release has no usable version: %r", tag)
         return CheckResult("failed", message=CHECK_FAILED)
     if latest <= mine:
         return CheckResult("current", version=current)
@@ -267,9 +269,7 @@ class Updater:
 
     def status(self, consume: bool = False) -> dict:
         with self._lock:
-            result = {"state": self._state, "version": self._version, "message": self._message,
-                      "check": self._check, "last_result": self._last_result,
-                      "kind": self._kind}
+            result = self._status_locked()
             if consume:
                 self._last_result = None
             return result
@@ -427,8 +427,13 @@ class Updater:
             self._last_result = result
 
     def _status_locked(self) -> dict:
+        # Paused for the update but still not ready means a converted file is waiting for room on
+        # its library drive (the worker is paused, so no file is under way).
+        waiting_for_room = (self._state == "pending" and self._worker.pause_state()[0]
+                            and not self._worker.ready_for_update())
         return {"state": self._state, "version": self._version, "message": self._message,
-                "check": self._check, "last_result": self._last_result, "kind": self._kind}
+                "check": self._check, "last_result": self._last_result, "kind": self._kind,
+                "waiting_for_room": waiting_for_room}
 
 
 # ---- The Windows hand-off: a one-off SYSTEM task runs the new release's installer

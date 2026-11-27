@@ -516,3 +516,27 @@ def test_install_script_allows_only_the_update_folder():
     assert "'ShelfSaver-Update'" in uninstall
     assert "Remove-Directory (Join-Path $DataDir 'update')" in uninstall
     assert text.rstrip().endswith("exit 0")
+
+
+def test_status_says_when_the_update_waits_for_library_room(tmp_path):
+    worker = FakeWorker(ready=False)
+    updater, _, _ = make_updater(tmp_path, worker=worker)
+    updater.check()
+    updater.start()
+    # Paused by the update, yet not ready: a converted file is waiting for room on its drive.
+    assert updater.status()["waiting_for_room"] is True
+    busy = FakeWorker(ready=False)
+    busy.pause_after_file = lambda: busy.calls.append("pause_after_file")  # still converting
+    updater2, _, _ = make_updater(tmp_path, worker=busy)
+    updater2.check()
+    updater2.start()
+    assert updater2.status()["waiting_for_room"] is False
+    assert make_updater(tmp_path)[0].status()["waiting_for_room"] is False
+
+
+def test_a_failed_check_logs_why(caplog):
+    def fetch(url):
+        raise OSError("certificate verify failed")
+    with caplog.at_level("WARNING", logger="shelfsaver.updates"):
+        check_latest("0.7.1", fetch)
+    assert "certificate verify failed" in caplog.text
