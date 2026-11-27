@@ -86,6 +86,14 @@ To update, get the newer copy of this folder and run the same command again. The
 is built first, then swapped in; if anything goes wrong the old version is put back. Your data
 is left alone. Run setup from a folder outside `C:\Program Files\ShelfSaver`.
 
+Or update from inside ShelfSaver: on **Settings**, press **Check for updates**. If a newer
+release is out, its notes are shown with an **Update** button. Pressing it finishes the file
+being converted, downloads the release from GitHub and runs the same setup in the background;
+the page comes back on the new version a minute or two later, or tells you why it didn't.
+ShelfSaver only contacts GitHub when you press one of those buttons. A pause you set stays in
+place through the update. On Linux and Docker, Check for updates tells you a new version is out
+and how to update.
+
 ## Uninstall on Windows
 
 In PowerShell as administrator:
