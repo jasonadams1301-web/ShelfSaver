@@ -328,6 +328,31 @@ class Worker:
             self._paused.set()
         logger.info("Paused: the current file is finished")
 
+    # ---- For the updater ----
+
+    def pause_state(self) -> tuple[bool, Optional[str]]:
+        """Whether conversions are paused, and the reason shown with it."""
+        with self._lock:
+            paused = self._paused.is_set()
+            return paused, (self._pause_message if paused else None)
+
+    def ready_for_update(self) -> bool:
+        """True when the app can be stopped without losing work.
+
+        Paused, no file under way, and no converted file waiting for room on its library drive:
+        a parked file only lives in memory, so a restart would throw that conversion away.
+        """
+        with self._lock:
+            return self._paused.is_set() and not self._busy and self._parked is None
+
+    def restore_pause(self, message: Optional[str]) -> None:
+        """Put back a pause that was in place before an update restarted the app."""
+        with self._lock:
+            self._pause_after = False
+            self._pause_message = message
+            self._paused.set()
+        logger.info("Still paused after the update: %s", message or "at the owner's request")
+
     def _file_started(self) -> None:
         with self._lock:
             self._busy = True

@@ -2344,3 +2344,35 @@ def test_end_to_end_strip_only_removes_a_commentary_track(env, monkeypatch, hard
     assert [s.title for s in info.streams if s.kind == "audio"] == ["English"]
     tracks = json.loads(env.run_row()["tracks_json"])
     assert [t["title"] for t in tracks["removed"]] == ["Director's Commentary"]
+
+
+# ---- Hooks for the updater
+
+def test_ready_for_update_needs_a_pause_and_no_file(env):
+    assert env.worker.ready_for_update() is False
+    env.worker.pause()
+    assert env.worker.ready_for_update() is True
+    env.worker._file_started()
+    assert env.worker.ready_for_update() is False
+
+
+def test_a_parked_file_holds_back_the_update(env):
+    env.worker.pause()
+    env.worker._parked = object()
+    assert env.worker.ready_for_update() is False
+
+
+def test_pause_state_reports_the_reason(env):
+    env.worker.pause(worker_module.BREAKER_MESSAGE)
+    assert env.worker.pause_state() == (True, worker_module.BREAKER_MESSAGE)
+    env.worker.resume()
+    assert env.worker.pause_state() == (False, None)
+
+
+def test_restore_pause_keeps_the_message(env):
+    env.worker.restore_pause(worker_module.BREAKER_MESSAGE)
+    assert env.worker.status()["state"] == "paused"
+    assert env.worker.status()["message"] == worker_module.BREAKER_MESSAGE
+    env.worker.resume()
+    env.worker.restore_pause(None)
+    assert env.worker.status()["state"] == "paused" and env.worker.status()["message"] is None
